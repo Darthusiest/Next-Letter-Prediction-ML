@@ -39,16 +39,16 @@ def load_text(paths: List[Path], max_chars: Optional[int] = MAX_CHARS) -> str:
 
 def clean_text(
     text: str,
-    lowercase: bool = True,
+    lowercase: bool = False,
     collapse_whitespace: bool = True,
-    remove_digits: bool = True,
+    remove_digits: bool = False,
     allowed_chars: Optional[set] = None,
 ) -> str:
     """
-    Normalize text for next-letter prediction.
-    - lowercase: fold to lowercase (recommended for v1).
-    - collapse_whitespace: replace runs of space/tab/newline with single space.
-    - remove_digits: strip digits (or replace with space to keep word boundaries).
+    Normalize text for next-character prediction (any char: letter, digit, punctuation, case).
+    - lowercase: if True, fold to lowercase (default False to keep capitalization).
+    - collapse_whitespace: replace runs of space/tab with single space; newline kept.
+    - remove_digits: if True, strip digits (default False to predict numbers).
     - allowed_chars: if set, only keep these; else use DEFAULT_ALLOWED_CHARS.
     """
     if allowed_chars is None:
@@ -58,17 +58,17 @@ def clean_text(
         text = text.lower()
 
     if remove_digits:
-        # Replace digits with space to preserve word boundaries
         text = re.sub(r"\d+", " ", text)
 
     if collapse_whitespace:
-        text = re.sub(r"[\s]+", " ", text)
+        # Collapse space and tab to single space; keep newlines
+        text = re.sub(r"[ \t]+", " ", text)
+        text = re.sub(r"\n+", "\n", text)
         text = text.strip()
 
     # Keep only allowed characters; drop others (e.g. stray unicode)
     result = "".join(c for c in text if c in allowed_chars)
 
-    # Collapse again in case we introduced double spaces at boundaries
     if collapse_whitespace:
         result = re.sub(r" +", " ", result)
 
