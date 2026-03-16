@@ -1,0 +1,11 @@
+
+# Large/raw datasets
+/data/raw/DataSet/
+*.pdf
+*.epub
+*.mobi
+*.azw3
+
+# Bytecode
+__pycache__/
+*.pyc

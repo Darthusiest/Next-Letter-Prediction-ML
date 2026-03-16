@@ -13,12 +13,31 @@ pip install -r requirements.txt
 
 ## Data
 
+### Recommended: plain text
+
 Place one or more `.txt` files (books, articles, etc.) in `data/raw/`. The pipeline will:
 
 - Load and concatenate them
 - Clean: collapse runs of space/tab; keep case, digits, and punctuation (a–z, A–Z, 0–9, space, newline, tab, `. , ! ? ; : ' " - ( )`)
 - Build a character vocabulary and sliding-window (context → next char) examples
 - Split contiguously into train / val / test (80 / 10 / 10). Target: ~20% val/test accuracy.
+
+### Optional: PDF / EPUB → TXT
+
+You can also start from `.pdf` or `.epub` sources and convert them to `.txt` first:
+
+- **PDF**: install `pypdf` and run  
+  ```bash
+  pip install pypdf
+  python tools/convert_to_txt.py book.pdf data/raw/book_from_pdf.txt
+  ```
+- **EPUB**: install `ebooklib` and `beautifulsoup4` and run  
+  ```bash
+  pip install ebooklib beautifulsoup4
+  python tools/convert_to_txt.py book.epub data/raw/book_from_epub.txt
+  ```
+
+After conversion, the resulting `.txt` files in `data/raw/` are handled exactly like any other text input.
 
 For a quick run you can limit corpus size in `src/config.py` by setting `MAX_CHARS = 500_000`.
 
