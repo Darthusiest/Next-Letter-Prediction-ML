@@ -34,6 +34,9 @@ from .models import get_model
 from .models.baseline_ngram import NGramModel
 from .evaluate import evaluate
 from .utils import set_seed, get_device, setup_logging, log_run
+from .utils.io_utils import ensure_run_dir, save_json
+from .analysis.config import AnalysisConfig
+from .analysis.run_analysis import run_post_training_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -53,10 +56,13 @@ def train(
 ):
     set_seed(seed)
     device = get_device()
-    if checkpoint_dir is None:
-        checkpoint_dir = CHECKPOINT_DIR
-    checkpoint_dir = Path(checkpoint_dir)
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    # Choose run_id and run directory
+    import time
+
+    run_id = time.strftime("%Y%m%d-%H%M%S")
+    run_dir = ensure_run_dir(run_id)
+    checkpoint_dir = run_dir  # for best.pt / checkpoint.pt
 
     if data_paths is None:
         data_paths = list(Path(RAW_DATA_DIR).glob("*.txt"))
@@ -69,6 +75,8 @@ def train(
     raw = load_text(data_paths, max_chars=max_chars)
     text = clean_text(raw)
     logger.info("Loaded and cleaned text: %d characters", len(text))
+    # Save cleaned corpus snapshot for analysis
+    (run_dir / "train_corpus.txt").write_text(text, encoding="utf-8")
 
     vocab = build_vocab_from_text(text, allowed_chars=DEFAULT_ALLOWED_CHARS)
     logger.info("Vocabulary size: %d", vocab.vocab_size)
@@ -114,6 +122,9 @@ def train(
 
     best_val_loss = float("inf")
     patience_counter = 0
+    epochs_list = []
+    train_loss_history = []
+    val_loss_history = []
 
     for epoch in range(epochs):
         model.train()
@@ -180,8 +191,41 @@ def train(
     # After training, evaluate on test set for logging
     test_loss, test_acc = evaluate(model, test_loader, device, is_ngram=False)
 
-    # Log run configuration and metrics
+    # Save loss history for analysis
+    loss_history = {
+        "epochs": epochs_list,
+        "train_loss": train_loss_history,
+        "val_loss": val_loss_history,
+    }
+    save_json(loss_history, run_dir / "loss_history.json")
+
+    # Save checkpoint compatible with analysis
+    torch.save(
+        {
+            "model_name": model_name,
+            "model_state": model.state_dict(),
+            "vocab": vocab,
+            "context_length": context_length,
+        },
+        run_dir / "checkpoint.pt",
+    )
+
+    # Save metrics summary
+    metrics = {
+        "run_id": run_id,
+        "model": model_name,
+        "train_loss_final": train_loss_history[-1] if train_loss_history else None,
+        "val_loss_best": best_val_loss,
+        "test_loss": test_loss,
+        "test_accuracy": test_acc,
+        "num_chars": len(text),
+        "vocab_size": vocab.vocab_size,
+    }
+    save_json(metrics, run_dir / "metrics.json")
+
+    # Also log run summary to logs/runs for quick overview
     run_info = {
+        "run_id": run_id,
         "model": model_name,
         "config": {
             "context_length": context_length,
@@ -206,6 +250,10 @@ def train(
         },
     }
     log_run(run_info)
+
+    # Run post-training analysis
+    analysis_cfg = AnalysisConfig(run_id=run_id)
+    run_post_training_analysis(analysis_cfg)
 
     return model, vocab
 
