@@ -33,7 +33,7 @@ from .dataset import get_splits, get_dataloaders
 from .models import get_model
 from .models.baseline_ngram import NGramModel
 from .evaluate import evaluate
-from .utils import set_seed, get_device, setup_logging
+from .utils import set_seed, get_device, setup_logging, log_run
 
 logger = logging.getLogger(__name__)
 
@@ -100,8 +100,9 @@ def train(
         )
         return model, vocab
     else:
+        # For neural models, delegate to get_model with the requested name.
         model = get_model(
-            "mlp",
+            model_name,
             vocab_size=vocab.vocab_size,
             context_length=context_length,
             embed_dim=EMBED_DIM,
@@ -175,6 +176,36 @@ def train(
         if patience_counter >= early_stop_patience:
             logger.info("Early stopping after %d epochs", epoch + 1)
             break
+
+    # After training, evaluate on test set for logging
+    test_loss, test_acc = evaluate(model, test_loader, device, is_ngram=False)
+
+    # Log run configuration and metrics
+    run_info = {
+        "model": model_name,
+        "config": {
+            "context_length": context_length,
+            "batch_size": batch_size,
+            "embed_dim": EMBED_DIM,
+            "hidden_dim": HIDDEN_DIM,
+            "dropout": DROPOUT,
+            "learning_rate": lr,
+            "epochs": epochs,
+        },
+        "data": {
+            "num_chars": len(text),
+            "vocab_size": vocab.vocab_size,
+            "train_size": len(train_ds),
+            "val_size": len(val_ds),
+            "test_size": len(test_ds),
+        },
+        "metrics": {
+            "best_val_loss": best_val_loss,
+            "test_loss": test_loss,
+            "test_acc": test_acc,
+        },
+    }
+    log_run(run_info)
 
     return model, vocab
 
