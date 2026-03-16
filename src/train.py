@@ -251,8 +251,14 @@ def train(
     }
     log_run(run_info)
 
-    # Run post-training analysis
-    analysis_cfg = AnalysisConfig(run_id=run_id)
+    # Run post-training analysis (including extended diagnostics)
+    analysis_cfg = AnalysisConfig(
+        run_id=run_id,
+        generate_entropy_plots=True,
+        generate_context_viz=True,
+        generate_similarity_report=True,
+        generate_transition_graph=True,
+    )
     run_post_training_analysis(analysis_cfg)
 
     return model, vocab
