@@ -1,4 +1,36 @@
 """
+Shared matplotlib helpers for analysis plots.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Tuple
+
+import matplotlib.pyplot as plt
+
+
+def new_figure(figsize=(6, 4)) -> Tuple[plt.Figure, plt.Axes]:
+    """
+    Create a new figure and axes with a reasonable default size.
+    """
+    fig, ax = plt.subplots(figsize=figsize)
+    return fig, ax
+
+
+def save_figure(fig: plt.Figure, path: Path, show: bool = False) -> None:
+    """
+    Save a figure to disk at good resolution and optionally display it.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    if show:
+        plt.show()
+    plt.close(fig)
+
+
+"""
 Common matplotlib setup for analysis plots.
 Keeps figure creation consistent across training/data/embedding visualizations.
 """

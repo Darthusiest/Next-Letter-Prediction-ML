@@ -1,6 +1,11 @@
 """
-Utilities: device selection, random seed, logging.
+Utilities package: device selection, random seed, logging, and helpers.
+
+This replaces the earlier single-module `src/utils.py` so that submodules
+like `utils.io_utils` and `utils.plotting` can be imported cleanly.
 """
+
+from __future__ import annotations
 
 import json
 import logging
@@ -10,7 +15,7 @@ from typing import Any, Dict
 
 import torch
 
-from .config import SEED, PROJECT_ROOT
+from ..config import SEED, PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -61,3 +66,7 @@ def log_run(run_info: Dict[str, Any], logs_dir: Path | None = None) -> Path:
         json.dump(run_info, f, indent=2)
     logger.info("Wrote run log to %s", path)
     return path
+
+
+__all__ = ["set_seed", "get_device", "setup_logging", "log_run"]
+
