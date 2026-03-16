@@ -42,6 +42,7 @@ def pdf_to_text(pdf_path: Path) -> str:
 def epub_to_text(epub_path: Path) -> str:
     """Extract text from an EPUB using ebooklib (if installed)."""
     try:
+        import ebooklib  # type: ignore
         from ebooklib import epub  # type: ignore
         from bs4 import BeautifulSoup  # type: ignore
     except ImportError as exc:
@@ -52,8 +53,9 @@ def epub_to_text(epub_path: Path) -> str:
 
     book = epub.read_epub(str(epub_path))
     parts = []
+    # Use isinstance checks instead of ITEM_DOCUMENT constant to be robust
     for item in book.get_items():
-        if item.get_type() == epub.ITEM_DOCUMENT:
+        if isinstance(item, epub.EpubHtml):
             html = item.get_content()
             soup = BeautifulSoup(html, "html.parser")
             text = soup.get_text(separator=" ", strip=True)
