@@ -118,9 +118,26 @@ class ModelAnalysisWrapper:
     def get_attention_weights(self, context: str) -> Optional[np.ndarray]:
         """
         For transformers only.
-        Current models do not expose attention weights, so this returns None.
-        The transformer implementation can later be extended to record attention.
+        If the transformer model supports attention recording, return a numpy array
+        with shape (num_layers, num_heads, L, L) for the given context.
         """
-        return None
+        if self.model_type != "transformer":
+            return None
+        if not hasattr(self.model, "attn_weights"):
+            return None
+        x = self._prepare_context_tensor(context)
+        with torch.no_grad():
+            # Forward pass in attention-recording mode. The model is expected
+            # to populate self.model.attn_weights as a list of tensors.
+            try:
+                _ = self.model(x, return_attn=True)
+            except TypeError:
+                return None
+        attn_list = getattr(self.model, "attn_weights", None)
+        if not attn_list:
+            return None
+        # Each element: (B, heads, L, L). Use batch 0.
+        stacked = torch.stack([a[0] for a in attn_list], dim=0)  # (layers, heads, L, L)
+        return stacked.numpy()
 
 

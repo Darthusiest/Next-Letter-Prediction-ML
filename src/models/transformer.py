@@ -29,6 +29,66 @@ class PositionalEncoding(nn.Module):
         return x + self.pe[:, :seq_len, :]
 
 
+class _EncoderLayerWithAttn(nn.Module):
+    """
+    Minimal Transformer encoder layer that exposes per-head attention weights.
+    Implemented so post-training analysis can visualize attention heatmaps.
+    """
+
+    def __init__(
+        self,
+        d_model: int,
+        nhead: int,
+        dim_feedforward: int,
+        dropout: float,
+    ) -> None:
+        super().__init__()
+        self.self_attn = nn.MultiheadAttention(
+            embed_dim=d_model, num_heads=nhead, dropout=dropout, batch_first=True
+        )
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+
+        self.norm1 = nn.LayerNorm(d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.activation = nn.GELU()
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        attn_mask: torch.Tensor | None = None,
+        return_attn: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        attn_weights = None
+        if return_attn:
+            attn_out, attn_weights = self.self_attn(
+                x,
+                x,
+                x,
+                attn_mask=attn_mask,
+                need_weights=True,
+                average_attn_weights=False,  # (B, heads, L, L)
+            )
+        else:
+            attn_out, _ = self.self_attn(
+                x,
+                x,
+                x,
+                attn_mask=attn_mask,
+                need_weights=False,
+            )
+        x = x + self.dropout1(attn_out)
+        x = self.norm1(x)
+
+        ff = self.linear2(self.dropout(self.activation(self.linear1(x))))
+        x = x + self.dropout2(ff)
+        x = self.norm2(x)
+        return x, attn_weights
+
+
 class TransformerCharModel(nn.Module):
     """
     Causal transformer over character embeddings.
@@ -48,20 +108,26 @@ class TransformerCharModel(nn.Module):
         super().__init__()
         self.vocab_size = vocab_size
         self.context_length = context_length
+        self.num_layers = num_layers
+        self.num_heads = num_heads
 
         self.embed = nn.Embedding(vocab_size, embed_dim)
         self.pos_encoding = PositionalEncoding(embed_dim, max_len=context_length)
 
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=embed_dim,
-            nhead=num_heads,
-            dim_feedforward=ff_dim,
-            dropout=dropout,
-            batch_first=True,
+        self.layers = nn.ModuleList(
+            [
+                _EncoderLayerWithAttn(
+                    d_model=embed_dim,
+                    nhead=num_heads,
+                    dim_feedforward=ff_dim,
+                    dropout=dropout,
+                )
+                for _ in range(num_layers)
+            ]
         )
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.dropout = nn.Dropout(dropout)
         self.fc = nn.Linear(embed_dim, vocab_size)
+        self.attn_weights: list[torch.Tensor] = []
 
     def _causal_mask(self, L: int, device) -> torch.Tensor:
         # Mask out future positions (upper triangular)
@@ -69,7 +135,7 @@ class TransformerCharModel(nn.Module):
         mask = mask.masked_fill(mask == 1, float("-inf"))
         return mask
 
-    def forward(self, context: torch.Tensor) -> torch.Tensor:
+    def forward(self, context: torch.Tensor, return_attn: bool = False) -> torch.Tensor:
         """
         context: (batch, context_length) long tensor of character ids.
         Returns: (batch, vocab_size) logits.
@@ -78,7 +144,13 @@ class TransformerCharModel(nn.Module):
         x = self.pos_encoding(x)             # add positional information
         L = x.size(1)
         mask = self._causal_mask(L, x.device)
-        encoded = self.encoder(x, mask)      # (B, L, D)
+        if return_attn:
+            self.attn_weights = []
+        for layer in self.layers:
+            x, attn = layer(x, attn_mask=mask, return_attn=return_attn)
+            if return_attn and attn is not None:
+                self.attn_weights.append(attn.detach().cpu())
+        encoded = x
         last = encoded[:, -1, :]             # final position representation
         last = self.dropout(last)
         logits = self.fc(last)               # (B, V)

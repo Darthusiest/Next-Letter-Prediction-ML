@@ -39,7 +39,8 @@ DROPOUT = 0.25
 # Training (enough to reach ~20% val/test accuracy with full char set)
 LEARNING_RATE = 1e-3
 EPOCHS = 30
-EVAL_EVERY_N_STEPS = 150
+# Validation can be expensive on CPU; evaluate less frequently by default.
+EVAL_EVERY_N_STEPS = 5000
 EARLY_STOPPING_PATIENCE = 5  # epochs without val improvement
 CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"
 

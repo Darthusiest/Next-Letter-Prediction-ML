@@ -6,8 +6,8 @@ Predict the next character in English text from prior context. The model predict
 
 ```bash
 cd /path/to/NLP-ML
-python -m venv venv
-source venv/bin/activate   # or: venv\Scripts\activate on Windows
+python -m venv .venv
+source .venv/bin/activate   # or: .venv\Scripts\activate on Windows
 pip install -r requirements.txt
 ```
 
@@ -15,7 +15,12 @@ pip install -r requirements.txt
 
 ### Recommended: plain text
 
-Place one or more `.txt` files (books, articles, etc.) in `data/raw/`. The pipeline will:
+Place one or more `.txt` files (books, articles, etc.) in either:
+
+- `data/raw/`
+- `data/raw/nlp-ebooks/`
+
+The training script loads and concatenates **all** `*.txt` files found in those two locations. The pipeline will:
 
 - Load and concatenate them
 - Clean: collapse runs of space/tab; keep case, digits, and punctuation (a–z, A–Z, 0–9, space, newline, tab, `. , ! ? ; : ' " - ( )`)
@@ -24,12 +29,16 @@ Place one or more `.txt` files (books, articles, etc.) in `data/raw/`. The pipel
 
 ### Optional: PDF / EPUB → TXT
 
-You can also start from `.pdf` or `.epub` sources and convert them to `.txt` first:
+You can also start from `.pdf` or `.epub` sources in `data/raw/nlp-ebooks/` and convert them to `.txt` first:
 
 - **PDF**: install `pypdf` and run  
   ```bash
   pip install pypdf
   python tools/convert_to_txt.py book.pdf data/raw/book_from_pdf.txt
+  ```
+- **Batch PDF conversion** (recommended if you have many PDFs in `data/raw/nlp-ebooks/`):
+  ```bash
+  python tools/batch_convert_pdfs.py
   ```
 - **EPUB**: install `ebooklib` and `beautifulsoup4` and run  
   ```bash
@@ -49,13 +58,15 @@ From the project root:
 python -m src.train
 ```
 
-Or run as a module:
+This trains the **MLP** baseline by default and writes per-run artifacts under `outputs/runs/<run_id>/`, including:
 
-```bash
-python -m src.train
-```
+- `checkpoint.pt` (model weights + vocab + config needed for analysis)
+- `loss_history.json`
+- `metrics.json`
+- `train_corpus.txt` (cleaned corpus snapshot)
+- `plots/` and `reports/` (post-training analysis outputs)
 
-This trains the **MLP** baseline by default, saves the best checkpoint to `checkpoints/best.pt`, and logs train/val loss and accuracy.
+At the end of training, the script automatically runs the full post-training analysis pipeline.
 
 To train the **n-gram** baseline instead (no GPU, fast):
 
@@ -117,6 +128,7 @@ print(out)
 ## Project layout
 
 - `data/raw/` — input `.txt` files
+- `data/raw/nlp-ebooks/` — optional ebook sources (`.pdf`, `.epub`, etc.) and/or converted `.txt`
 - `data/processed/` — optional serialized vocab/indices
 - `src/config.py` — defaults (context length, batch size, paths, etc.)
 - `src/preprocess.py` — load and clean text
@@ -127,10 +139,27 @@ print(out)
 - `src/train.py` — training loop
 - `src/evaluate.py` — perplexity and accuracy
 - `src/generate.py` — autoregressive sampling with temperature
-- `src/analysis.py` — (placeholder for vowel/consonant, confusion, etc.)
-- `src/utils.py` — seed, device, logging
+- `src/analysis/` — post-training analysis pipeline (plots + reports)
+- `src/utils/` — utilities (seed/device/logging + io/plotting helpers)
 - `notebooks/` — exploratory notebooks
 - `tests/` — unit tests
+
+## Post-training analysis outputs
+
+Each run creates plots/reports under `outputs/runs/<run_id>/`:
+
+- `plots/`:
+  - `training_loss.png`, `validation_loss.png`
+  - `char_frequency.png`, `bigram_heatmap.png`
+  - `confusion_matrix.png`, `error_by_character.png`
+  - `embeddings_pca_2d.png`, `embeddings_tsne_2d.png` (if embeddings exist)
+  - `entropy_histogram.png` (if enabled)
+  - `context_similarity_heatmap.png`, `context_pca_2d.png` (and `context_pca_3d.png` if enabled)
+  - `letter_transition_graph.png` (if enabled)
+- `reports/`:
+  - `summary_report.txt`
+  - `confidence_summary.txt` (if enabled)
+  - `similarity_report.txt` (if enabled)
 
 ## Default hyperparameters (first run)
 
