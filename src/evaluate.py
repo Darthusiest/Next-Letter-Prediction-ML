@@ -20,10 +20,11 @@ def evaluate(
     total_loss = 0.0
     total_correct = 0
     total_tokens = 0
+    non_blocking = device.type == "cuda"
     with torch.no_grad():
         for context, target in dataloader:
-            context = context.to(device)
-            target = target.to(device)
+            context = context.to(device, non_blocking=non_blocking)
+            target = target.to(device, non_blocking=non_blocking)
             out = model(context)
             if is_ngram:
                 loss = F.nll_loss(out, target, reduction="sum")

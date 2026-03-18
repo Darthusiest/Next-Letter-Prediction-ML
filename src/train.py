@@ -3,13 +3,23 @@ Training loop: load data, build model, train with cross-entropy (or nll_loss for
 validation every N steps, checkpoint best model.
 """
 
+if __name__ == "__main__" and __package__ is None:
+    # Allow running as a script: `python src/train.py`
+    # Preferred is `python -m src.train`, but this keeps both working.
+    import sys
+    from pathlib import Path
+
+    project_root = Path(__file__).resolve().parents[1]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
 import logging
 from pathlib import Path
 
 import torch
 import torch.nn.functional as F
 
-from .config import (
+from src.config import (
     CONTEXT_LENGTH,
     BATCH_SIZE,
     LEARNING_RATE,
@@ -27,16 +37,16 @@ from .config import (
     DEFAULT_ALLOWED_CHARS,
     SEED,
 )
-from .preprocess import load_text, clean_text
-from .vocab import build_vocab_from_text
-from .dataset import get_splits, get_dataloaders
-from .models import get_model
-from .models.baseline_ngram import NGramModel
-from .evaluate import evaluate
-from .utils import set_seed, get_device, setup_logging, log_run
-from .utils.io_utils import ensure_run_dir, save_json
-from .analysis.config import AnalysisConfig
-from .analysis.run_analysis import run_post_training_analysis
+from src.preprocess import load_text, clean_text
+from src.vocab import build_vocab_from_text
+from src.dataset import get_splits, get_dataloaders
+from src.models import get_model
+from src.models.baseline_ngram import NGramModel
+from src.evaluate import evaluate
+from src.utils import set_seed, get_device, setup_logging, log_run
+from src.utils.io_utils import ensure_run_dir, save_json
+from src.analysis.config import AnalysisConfig
+from src.analysis.run_analysis import run_post_training_analysis
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +66,14 @@ def train(
 ):
     set_seed(seed)
     device = get_device()
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        try:
+            torch.set_float32_matmul_precision("high")
+        except Exception:
+            pass
 
     # Choose run_id and run directory
     import time
@@ -65,10 +83,16 @@ def train(
     checkpoint_dir = run_dir  # for best.pt / checkpoint.pt
 
     if data_paths is None:
-        data_paths = list(Path(RAW_DATA_DIR).glob("*.txt"))
+        # Collect .txt files from data/raw/ and data/raw/nlp-ebooks/
+        raw_dir = Path(RAW_DATA_DIR)
+        ebook_dir = raw_dir / "nlp-ebooks"
+        data_paths = list(raw_dir.glob("*.txt"))
+        if ebook_dir.exists():
+            data_paths.extend(ebook_dir.glob("*.txt"))
         if not data_paths:
             raise FileNotFoundError(
-                f"No .txt files in {RAW_DATA_DIR}. Put text files in data/raw/."
+                f"No .txt files in {RAW_DATA_DIR} or {RAW_DATA_DIR / 'nlp-ebooks'}. "
+                "Put text files in data/raw/ or data/raw/nlp-ebooks/."
             )
 
     max_chars = max_chars or MAX_CHARS
@@ -119,6 +143,8 @@ def train(
         )
         model.to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        use_amp = device.type == "cuda"
+        scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     best_val_loss = float("inf")
     patience_counter = 0
@@ -132,13 +158,16 @@ def train(
         num_batches = 0
         step = 0
         for context, target in train_loader:
-            context = context.to(device)
-            target = target.to(device)
-            optimizer.zero_grad()
-            logits = model(context)
-            loss = F.cross_entropy(logits, target)
-            loss.backward()
-            optimizer.step()
+            non_blocking = device.type == "cuda"
+            context = context.to(device, non_blocking=non_blocking)
+            target = target.to(device, non_blocking=non_blocking)
+            optimizer.zero_grad(set_to_none=True)
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                logits = model(context)
+                loss = F.cross_entropy(logits, target)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             total_loss += loss.item()
             num_batches += 1
             step += 1
@@ -151,7 +180,6 @@ def train(
                 model.train()
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
-                    patience_counter = 0
                     torch.save(
                         {
                             "model_state": model.state_dict(),
@@ -161,11 +189,12 @@ def train(
                         },
                         checkpoint_dir / "best.pt",
                     )
-                else:
-                    patience_counter += 1
 
         epoch_train_loss = total_loss / num_batches
+        epochs_list.append(epoch + 1)
+        train_loss_history.append(epoch_train_loss)
         val_loss, val_acc = evaluate(model, val_loader, device, is_ngram=False)
+        val_loss_history.append(val_loss)
         logger.info(
             "Epoch %d train_loss=%.4f val_loss=%.4f val_acc=%.4f",
             epoch + 1, epoch_train_loss, val_loss, val_acc,
@@ -200,12 +229,18 @@ def train(
     save_json(loss_history, run_dir / "loss_history.json")
 
     # Save checkpoint compatible with analysis
+    model_kwargs = {
+        "embed_dim": EMBED_DIM,
+        "hidden_dim": HIDDEN_DIM,
+        "dropout": DROPOUT,
+    }
     torch.save(
         {
             "model_name": model_name,
             "model_state": model.state_dict(),
             "vocab": vocab,
             "context_length": context_length,
+            "model_kwargs": model_kwargs,
         },
         run_dir / "checkpoint.pt",
     )

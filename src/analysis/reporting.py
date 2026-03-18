@@ -15,10 +15,35 @@ def write_summary_report(
     skipped_reasons: List[str],
     reports_dir: Path,
 ) -> Path:
+    """
+    Write a human-readable summary_report.txt for a given run, including:
+    - metrics from metrics.json (if present)
+    - list of generated plot/report files
+    - reasons why any analyses were skipped
+    """
     reports_dir.mkdir(parents=True, exist_ok=True)
     path = reports_dir / "summary_report.txt"
 
     with path.open("w", encoding="utf-8") as f:
         f.write("Post-training analysis summary\n")
         f.write("================================\n\n")
-\n        if metrics:\n            f.write(\"Metrics (from metrics.json):\\n\")\n            for k, v in metrics.items():\n                f.write(f\"  {k}: {v}\\n\")\n            f.write(\"\\n\")\n\n        if generated_files:\n            f.write(\"Generated files:\\n\")\n            for p in generated_files:\n                f.write(f\"  {p}\\n\")\n            f.write(\"\\n\")\n\n        if skipped_reasons:\n            f.write(\"Skipped analyses:\\n\")\n            for reason in skipped_reasons:\n                f.write(f\"  - {reason}\\n\")\n\n    return path\n+\n*** End Patch```} ***!
+
+        if metrics:
+            f.write("Metrics (from metrics.json):\n")
+            for k, v in metrics.items():
+                f.write(f"  {k}: {v}\n")
+            f.write("\n")
+
+        if generated_files:
+            f.write("Generated files:\n")
+            for p in generated_files:
+                f.write(f"  {p}\n")
+            f.write("\n")
+
+        if skipped_reasons:
+            f.write("Skipped analyses:\n")
+            for reason in skipped_reasons:
+                f.write(f"  - {reason}\n")
+
+    return path
+

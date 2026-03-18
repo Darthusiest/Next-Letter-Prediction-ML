@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from ..utils.plotting import new_figure, save_figure
+from ..utils.plotting import new_figure, save_figure, display_char
 from ..vocab import CharVocab
 from ..models.analysis_wrapper import ModelAnalysisWrapper
 
@@ -57,8 +57,9 @@ def plot_confusion_matrix(mat: np.ndarray, vocab: CharVocab, output_dir: Path, s
     im = ax.imshow(mat, interpolation="nearest", aspect="auto")
     ax.set_xticks(range(n))
     ax.set_yticks(range(n))
-    ax.set_xticklabels(chars, rotation=90)
-    ax.set_yticklabels(chars)
+    labels = [display_char(c) for c in chars]
+    ax.set_xticklabels(labels, rotation=90)
+    ax.set_yticklabels(labels)
     ax.set_xlabel("Predicted")
     ax.set_ylabel("True")
     ax.set_title("Next-character Confusion Matrix")
@@ -85,7 +86,7 @@ def plot_error_by_character(
     fig, ax = new_figure(figsize=(8, 4))
     ax.bar(range(len(chars)), errors)
     ax.set_xticks(range(len(chars)))
-    ax.set_xticklabels(chars, rotation=90)
+    ax.set_xticklabels([display_char(c) for c in chars], rotation=90)
     ax.set_ylabel("Error rate")
     ax.set_title("Error Rate by Character on Test Set")
     save_figure(fig, output_dir / "plots" / "error_by_character.png", show=show)

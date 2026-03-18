@@ -1,0 +1,48 @@
+Entropy / confidence summary for next-character prediction
+=========================================================
+
+Total sampled contexts: 2000
+
+Most confident contexts (lowest entropy):
+  ctx=' \nBY WESTERN PUBLISHING COMPANY, INC. \nS CONTENTS \nWUMELC REATIO'  entropy=0.0000  top='N'  P(top)=1.0000
+  ctx=' ............ 108 \nTHE DocTors WEDDING ......... 129 \n8 FRANKENS'  entropy=0.0099  top='T'  P(top)=0.9987
+  ctx='s 36 \nREVENGE eter Ie Pe Renee ee a \nTHE-HORRIBLE TRUTH.........'  entropy=0.0103  top=' '  P(top)=0.9987
+  ctx='IFE ............ 108 \nTHE DocTors WEDDING ......... 129 \n8 FRANK'  entropy=0.0108  top='E'  P(top)=0.9988
+  ctx='WIFE ............ 108 \nTHE DocTors WEDDING ......... 129 \n8 FRAN'  entropy=0.0144  top='K'  P(top)=0.9983
+  ctx=' 36 \nREVENGE eter Ie Pe Renee ee a \nTHE-HORRIBLE TRUTH.........'  entropy=0.0145  top=' '  P(top)=0.9981
+  ctx='N po ieee le) \n ; CopyRiGHT 1968 BY DALE CARLSON. \nPRINTED IN TH'  entropy=0.0199  top='E'  P(top)=0.9975
+  ctx=' le) \n ; CopyRiGHT 1968 BY DALE CARLSON. \nPRINTED IN THE U.S.A.'  entropy=0.0313  top=' '  P(top)=0.9955
+  ctx='le) \n ; CopyRiGHT 1968 BY DALE CARLSON. \nPRINTED IN THE U.S.A.'  entropy=0.0313  top=' '  P(top)=0.9955
+  ctx='HE MONSTERS WIFE ............ 108 \nTHE DocTors WEDDING .........'  entropy=0.0329  top=' '  P(top)=0.9953
+  ctx='e le) \n ; CopyRiGHT 1968 BY DALE CARLSON. \nPRINTED IN THE U.S.A.'  entropy=0.0329  top=' '  P(top)=0.9953
+  ctx='h over the roofs of Ingol- \nstadt, Germany, Dr. Victor Frankenst'  entropy=0.0338  top='e'  P(top)=0.9958
+  ctx='ocTors WEDDING ......... 129 \n8 FRANKENSTEIN \n31 c- \nThe Creatio'  entropy=0.0429  top='n'  P(top)=0.9945
+  ctx='............ 108 \nTHE DocTors WEDDING ......... 129 \n8 FRANKENST'  entropy=0.0447  top='E'  P(top)=0.9941
+  ctx='E MONSTERS WIFE ............ 108 \nTHE DocTors WEDDING .........'  entropy=0.0448  top=' '  P(top)=0.9932
+  ctx="EW YORK \nEL GANiNO COLLEGE LIBRARY \n 3 \n \nf \nx ' \n( \n1 \n7. \n :"  entropy=0.0499  top=' '  P(top)=0.9922
+  ctx=', when, by \nthe glimmer of its pale light, he saw the dull yello'  entropy=0.0581  top='w'  P(top)=0.9930
+  ctx=') \n ; CopyRiGHT 1968 BY DALE CARLSON. \nPRINTED IN THE U.S.A. \nBY'  entropy=0.0663  top=' '  P(top)=0.9881
+  ctx='DocTors WEDDING ......... 129 \n8 FRANKENSTEIN \n31 c- \nThe Creati'  entropy=0.0681  top='o'  P(top)=0.9906
+  ctx='........... 108 \nTHE DocTors WEDDING ......... 129 \n8 FRANKENSTE'  entropy=0.0697  top='I'  P(top)=0.9900
+
+Least confident contexts (highest entropy):
+  ctx='e a \neek \ns \nper vate 9 \nere \nOre Lees ea iL \nDe ei ue \nrf \ni eh'  entropy=4.1366  top=' '  P(top)=0.0662
+  ctx=' a \neek \ns \nper vate 9 \nere \nOre Lees ea iL \nDe ei ue \nrf \ni eh'  entropy=4.1028  top=' '  P(top)=0.0699
+  ctx=') ry ee \n4 \n2 \n4 ; y \n we \nee ns FRANKENSTEIN \np oS (G . \nMARY,S'  entropy=4.0796  top=' '  P(top)=0.0521
+  ctx="N PRESS () NEW YORK \nEL GANiNO COLLEGE LIBRARY \n 3 \n \nf \nx ' \n("  entropy=3.9978  top=' '  P(top)=0.0941
+  ctx="EN PRESS () NEW YORK \nEL GANiNO COLLEGE LIBRARY \n 3 \n \nf \nx ' \n("  entropy=3.9817  top=' '  P(top)=0.0922
+  ctx=' hie \nf \nsr) ry ee \n4 \n2 \n4 ; y \n we \nee ns FRANKENSTEIN \np oS ('  entropy=3.9797  top='t'  P(top)=0.0377
+  ctx='LISHING COMPANY, INC. \nS CONTENTS \nWUMELC REATION. eet.) oe 9 \nA'  entropy=3.9400  top=' '  P(top)=0.1169
+  ctx=' REATION. eet.) oe 9 \nAE EGE SC AP i Gem er eae scat, owt 24 \nIE'  entropy=3.8965  top=' '  P(top)=0.1323
+  ctx='peste in ie ite ot PSESeAbRS Se Tp sece hss estoy epias we set E'  entropy=3.8924  top=' '  P(top)=0.0952
+  ctx=" PRESS () NEW YORK \nEL GANiNO COLLEGE LIBRARY \n 3 \n \nf \nx ' \n("  entropy=3.8918  top=' '  P(top)=0.1129
+  ctx='te in ie ite ot PSESeAbRS Se Tp sece hss estoy epias we set ER D'  entropy=3.8639  top=' '  P(top)=0.0784
+  ctx='SS \nATALOG CARD NUMBER 68-9479 d ; auth N po ieee le) \n ; CopyRi'  entropy=3.8419  top=' '  P(top)=0.0610
+  ctx='SHING COMPANY, INC. \nS CONTENTS \nWUMELC REATION. eet.) oe 9 \nAE'  entropy=3.8122  top=' '  P(top)=0.1216
+  ctx='ten: \nbevaes (Scie Sores aeteny ae a \neek \ns \nper vate 9 \nere \nO'  entropy=3.8085  top=' '  P(top)=0.1016
+  ctx='kenstein \nAdapted by Dale Carlson \nIllustrated by Neil Boyle \nGO'  entropy=3.7622  top=' '  P(top)=0.1157
+  ctx='RSES VSS CEOS 3a TE ASST RE Saar \nSy IFES \nEi: \n2 Sass ohh \nEL C'  entropy=3.7385  top=' '  P(top)=0.0901
+  ctx='owt 24 \nIEIEC ION were Menten Se teee Ste nko. nes 36 \nREVENGE e'  entropy=3.7088  top=' '  P(top)=0.1267
+  ctx='797-85 \nFrankenstein \nAdapted by Dale Carlson \nIllustrated by Ne'  entropy=3.6910  top='a'  P(top)=0.1025
+  ctx='sece hss estoy epias we set ER DI TE egy i Es REGRSES VSS CEOS 3'  entropy=3.6564  top=' '  P(top)=0.1225
+  ctx=' ieee le) \n ; CopyRiGHT 1968 BY DALE CARLSON. \nPRINTED IN THE U.'  entropy=3.6387  top=' '  P(top)=0.1077

@@ -30,7 +30,11 @@ class CharSequenceDataset(Dataset):
     def __init__(self, text: str, vocab: CharVocab, context_length: int = CONTEXT_LENGTH):
         self.vocab = vocab
         self.context_length = context_length
+        # Store ids in two forms:
+        # - Python list for compatibility with n-gram baseline and misc usage
+        # - Torch tensor for fast slicing in __getitem__ (avoid per-sample allocation)
         self.ids = vocab.encode(text)
+        self.ids_tensor = torch.tensor(self.ids, dtype=torch.long)
         # Valid indices: we need context_length chars before, so start at context_length
         self.valid_length = len(self.ids) - context_length
         if self.valid_length <= 0:
@@ -42,12 +46,10 @@ class CharSequenceDataset(Dataset):
         return self.valid_length
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int]:
-        # context: ids[idx : idx + context_length]
-        # target: ids[idx + context_length]
         start = idx
         end = start + self.context_length
-        context = torch.tensor(self.ids[start:end], dtype=torch.long)
-        target = self.ids[end]
+        context = self.ids_tensor[start:end]
+        target = int(self.ids_tensor[end].item())
         return context, target
 
 
@@ -84,23 +86,29 @@ def get_dataloaders(
     num_workers: int = NUM_WORKERS,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """Build DataLoaders for train, val, test. Shuffle only train."""
+    pin_memory = torch.cuda.is_available()
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=False,
+        pin_memory=pin_memory,
+        persistent_workers=(num_workers > 0),
     )
     val_loader = DataLoader(
         val_ds,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=(num_workers > 0),
     )
     test_loader = DataLoader(
         test_ds,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=(num_workers > 0),
     )
     return train_loader, val_loader, test_loader

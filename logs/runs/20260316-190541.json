@@ -1,0 +1,25 @@
+{
+  "run_id": "20260316-190541",
+  "model": "mlp",
+  "config": {
+    "context_length": 64,
+    "batch_size": 64,
+    "embed_dim": 64,
+    "hidden_dim": 256,
+    "dropout": 0.25,
+    "learning_rate": 0.001,
+    "epochs": 30
+  },
+  "data": {
+    "num_chars": 1518099,
+    "vocab_size": 76,
+    "train_size": 1214415,
+    "val_size": 151746,
+    "test_size": 151746
+  },
+  "metrics": {
+    "best_val_loss": 2.072499249792293,
+    "test_loss": 2.1917240720025686,
+    "test_acc": 0.40732539902205
+  }
+}

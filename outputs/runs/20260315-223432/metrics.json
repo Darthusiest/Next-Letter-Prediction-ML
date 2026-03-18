@@ -1,0 +1,10 @@
+{
+  "run_id": "20260315-223432",
+  "model": "mlp",
+  "train_loss_final": null,
+  "val_loss_best": 2.125479520060889,
+  "test_loss": 2.1922234737055915,
+  "test_accuracy": 0.38470865788884057,
+  "num_chars": 1518099,
+  "vocab_size": 76
+}

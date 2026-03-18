@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Iterable
 
 from ..models.analysis_wrapper import ModelAnalysisWrapper
-from ..utils.plotting import new_figure, save_figure
+from ..utils.plotting import new_figure, save_figure, display_char
 
 
 def _slugify(s: str) -> str:
@@ -34,7 +34,7 @@ def plot_prediction_bars(
         fig, ax = new_figure()
         ax.bar(range(len(chars)), probs)
         ax.set_xticks(range(len(chars)))
-        ax.set_xticklabels(chars)
+        ax.set_xticklabels([display_char(c) for c in chars])
         ax.set_ylabel("Probability")
         ax.set_title(f"Next-character distribution for context {repr(ctx)}")
 

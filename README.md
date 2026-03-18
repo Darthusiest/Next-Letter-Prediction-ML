@@ -46,7 +46,7 @@ For a quick run you can limit corpus size in `src/config.py` by setting `MAX_CHA
 From the project root:
 
 ```bash
-PYTHONPATH=. python src/train.py
+python -m src.train
 ```
 
 Or run as a module:

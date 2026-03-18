@@ -11,7 +11,7 @@ from typing import Dict, List
 import matplotlib.pyplot as plt
 import numpy as np
 
-from ..utils.plotting import new_figure, save_figure
+from ..utils.plotting import new_figure, save_figure, display_char
 from ..vocab import CharVocab
 
 
@@ -24,7 +24,7 @@ def plot_char_frequency(text: str, vocab: CharVocab, output_dir: Path, show: boo
     fig, ax = new_figure(figsize=(8, 4))
     ax.bar(range(len(chars)), freqs)
     ax.set_xticks(range(len(chars)))
-    ax.set_xticklabels(chars, rotation=90)
+    ax.set_xticklabels([display_char(c) for c in chars], rotation=90)
     ax.set_ylabel("Count")
     ax.set_title("Character Frequency in Training Corpus")
     save_figure(fig, plots_dir / "char_frequency.png", show=show)
@@ -55,8 +55,9 @@ def plot_bigram_heatmap(text: str, vocab: CharVocab, output_dir: Path, show: boo
     im = ax.imshow(mat, interpolation="nearest", aspect="auto")
     ax.set_xticks(range(n))
     ax.set_yticks(range(n))
-    ax.set_xticklabels(chars, rotation=90)
-    ax.set_yticklabels(chars)
+    labels = [display_char(c) for c in chars]
+    ax.set_xticklabels(labels, rotation=90)
+    ax.set_yticklabels(labels)
     ax.set_xlabel("Next character")
     ax.set_ylabel("Current character")
     ax.set_title("Character Bigram Probabilities in Corpus")

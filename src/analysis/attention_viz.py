@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from ..models.analysis_wrapper import ModelAnalysisWrapper
-from ..utils.plotting import new_figure, save_figure
+from ..utils.plotting import new_figure, save_figure, display_char
 
 
 def _slugify(text: str) -> str:
@@ -54,7 +54,7 @@ def run_attention_viz(
         layer_indices = [i for i in layer_indices if 0 <= i < num_layers]
         head_indices = [h for h in head_indices if 0 <= h < num_heads]
 
-        chars = list(ctx[-L:])
+        chars = [display_char(c) for c in list(ctx[-L:])]
 
         ctx_slug = _slugify(ctx)
         for li in layer_indices:

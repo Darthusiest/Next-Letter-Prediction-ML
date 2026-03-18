@@ -32,6 +32,61 @@ from ..models import get_model
 from ..utils import get_device
 
 
+def _infer_model_kwargs_from_state(model_name: str, state: dict) -> dict:
+    """
+    Best-effort inference of model hyperparameters from state_dict shapes.
+    This is mainly to support older checkpoints that didn't store model kwargs.
+    """
+    if not state:
+        return {}
+
+    if model_name == "mlp":
+        out = {}
+        if "embed.weight" in state:
+            out["embed_dim"] = int(state["embed.weight"].shape[1])
+        if "fc1.weight" in state:
+            out["hidden_dim"] = int(state["fc1.weight"].shape[0])
+        return out
+
+    if model_name == "rnn":
+        out = {}
+        if "embed.weight" in state:
+            out["embed_dim"] = int(state["embed.weight"].shape[1])
+        # LSTM weight_hh_l0 is (4H, H)
+        if "lstm.weight_hh_l0" in state:
+            out["hidden_dim"] = int(state["lstm.weight_hh_l0"].shape[1])
+        # Count layers by checking weight_ih_l{k}
+        num_layers = 0
+        while f"lstm.weight_ih_l{num_layers}" in state:
+            num_layers += 1
+        if num_layers:
+            out["num_layers"] = num_layers
+        return out
+
+    if model_name == "cnn":
+        out = {}
+        if "embed.weight" in state:
+            out["embed_dim"] = int(state["embed.weight"].shape[1])
+        # convs.<i>.weight has shape (C_out, C_in, K)
+        kernel_sizes = []
+        num_channels = None
+        i = 0
+        while f"convs.{i}.weight" in state:
+            w = state[f"convs.{i}.weight"]
+            if num_channels is None:
+                num_channels = int(w.shape[0])
+            kernel_sizes.append(int(w.shape[2]))
+            i += 1
+        if num_channels is not None:
+            out["num_channels"] = num_channels
+        if kernel_sizes:
+            out["kernel_sizes"] = tuple(kernel_sizes)
+        return out
+
+    # Transformer kwargs are not reliably inferrable from state_dict alone.
+    return {}
+
+
 def run_post_training_analysis(config: AnalysisConfig) -> None:
     run_dir = ensure_run_dir(config.run_id)
     plots_dir = run_dir / "plots"
@@ -56,7 +111,10 @@ def run_post_training_analysis(config: AnalysisConfig) -> None:
         skipped.append("No checkpoint.pt found; skipping model-based analyses.")
         model_wrapper = None
     else:
-        ckpt = torch.load(checkpoint_path, map_location=device)
+        # Checkpoint was saved by this project and is trusted, so we allow
+        # loading full pickled objects (weights_only=False). This avoids
+        # PyTorch 2.6's stricter default which blocks custom classes.
+        ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
         model_name = ckpt.get("model_name", "mlp")
         vocab_obj = ckpt.get("vocab")
         if not isinstance(vocab_obj, CharVocab):
@@ -64,12 +122,16 @@ def run_post_training_analysis(config: AnalysisConfig) -> None:
         else:
             vocab = vocab_obj
         context_length = ckpt.get("context_length", CONTEXT_LENGTH)
+        state = ckpt.get("model_state") or {}
+        model_kwargs = ckpt.get("model_kwargs") or _infer_model_kwargs_from_state(
+            model_name, state
+        )
         model = get_model(
             model_name,
             vocab_size=vocab.vocab_size,
             context_length=context_length,
+            **model_kwargs,
         )
-        state = ckpt.get("model_state")
         if state is not None:
             model.load_state_dict(state)
         model_wrapper = ModelAnalysisWrapper(
