@@ -11,7 +11,7 @@ import networkx as nx
 import numpy as np
 
 from ..vocab import CharVocab
-from ..utils.plotting import save_figure
+from ..utils.plotting import save_figure, display_char
 
 
 def _compute_bigram_probs(text: str, vocab: CharVocab) -> dict[tuple[str, str], float]:
@@ -34,24 +34,31 @@ def run_transition_graph(
     text: str,
     vocab: CharVocab,
     output_dir: Path,
-    threshold: float = 0.05,
-    max_out_edges: int = 5,
+    threshold: float = 0.02,
+    max_out_edges: int = 3,
     show: bool = False,
 ) -> Path:
     plots_dir = output_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
 
     probs = _compute_bigram_probs(text, vocab)
+    # Unigram counts for node sizing and top-N filtering
+    unigram = {}
+    for ch in text:
+        if ch in vocab.char2id:
+            unigram[ch] = unigram.get(ch, 0) + 1
+    top_nodes = [c for c, _ in sorted(unigram.items(), key=lambda kv: kv[1], reverse=True)[:35]]
 
     G = nx.DiGraph()
 
-    # add nodes for all characters seen
-    for ch in vocab.id2char:
+    for ch in top_nodes:
         G.add_node(ch)
 
     # for each source char, keep top-K outgoing edges above threshold
     outgoing: dict[str, list[tuple[str, float]]] = {}
     for (a, b), p in probs.items():
+        if a not in G.nodes or b not in G.nodes:
+            continue
         if p < threshold:
             continue
         outgoing.setdefault(a, []).append((b, p))
@@ -70,17 +77,26 @@ def run_transition_graph(
         save_figure(fig, path, show=show)
         return path
 
-    pos = nx.spring_layout(H, seed=42)
+    # Circular layout is much easier to read than spring layout for dense graphs.
+    pos = nx.circular_layout(H)
     weights = [H[u][v]["weight"] for u, v in H.edges()]
     max_w = max(weights) if weights else 1.0
     widths = [1.0 + 4.0 * (w / max_w) for w in weights]
 
-    fig = plt.figure(figsize=(8, 6))
+    fig = plt.figure(figsize=(10, 10))
     ax = fig.add_subplot(111)
-    nx.draw_networkx_nodes(H, pos, node_size=500, ax=ax)
-    nx.draw_networkx_edges(H, pos, width=widths, arrows=True, arrowstyle="->", ax=ax)
-    nx.draw_networkx_labels(H, pos, font_size=8, ax=ax)
-    ax.set_title("Letter transition graph (corpus bigrams)")
+    node_sizes = []
+    for n in H.nodes:
+        c = unigram.get(n, 1)
+        node_sizes.append(200 + 1800 * (c / max(unigram.values())))
+    nx.draw_networkx_nodes(H, pos, node_size=node_sizes, ax=ax, alpha=0.85)
+    nx.draw_networkx_edges(
+        H, pos, width=widths, arrows=True, arrowstyle="->", ax=ax, alpha=0.35
+    )
+    nx.draw_networkx_labels(
+        H, pos, labels={n: display_char(n) for n in H.nodes}, font_size=9, ax=ax
+    )
+    ax.set_title("Letter transition graph (top 35 chars; corpus bigrams)")
     ax.axis("off")
 
     path = plots_dir / "letter_transition_graph.png"

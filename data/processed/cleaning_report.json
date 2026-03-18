@@ -1,0 +1,82 @@
+{
+  "inputs": [
+    "/Users/jakepajouhesh/Documents/Projects/NLP-ML/data/raw/frankenstein_--_mary_shelley_--_74d34e1170686b902d5f3cf60f74dd1a_--_anna_s_archive.txt",
+    "/Users/jakepajouhesh/Documents/Projects/NLP-ML/data/raw/moby_dick_herman_melville_--_herman_melville_--_2004_--_7a65904d9209b76f5212c8bc1b6fd56d_--_anna_s_archive.txt",
+    "/Users/jakepajouhesh/Documents/Projects/NLP-ML/data/raw/sample.txt",
+    "/Users/jakepajouhesh/Documents/Projects/NLP-ML/data/raw/treasure_island_--_robert_louis_stevenson__--_9ac6490f62f04adbfa062828297d600e_--_anna_s_archive.txt"
+  ],
+  "outputs_dir": "/Users/jakepajouhesh/Documents/Projects/NLP-ML/data/processed/clean_texts",
+  "total_input_chars": 1557912,
+  "total_output_chars": 1418380,
+  "skipped_files": [],
+  "file_reports": [
+    {
+      "path": "/Users/jakepajouhesh/Documents/Projects/NLP-ML/data/raw/frankenstein_--_mary_shelley_--_74d34e1170686b902d5f3cf60f74dd1a_--_anna_s_archive.txt",
+      "skipped": false,
+      "skip_reason": null,
+      "input_chars": 204961,
+      "output_chars": 200195,
+      "input_lines": 4269,
+      "kept_lines": 4072,
+      "dropped_lines": 196
+    },
+    {
+      "path": "/Users/jakepajouhesh/Documents/Projects/NLP-ML/data/raw/moby_dick_herman_melville_--_herman_melville_--_2004_--_7a65904d9209b76f5212c8bc1b6fd56d_--_anna_s_archive.txt",
+      "skipped": false,
+      "skip_reason": null,
+      "input_chars": 911995,
+      "output_chars": 792124,
+      "input_lines": 30855,
+      "kept_lines": 18119,
+      "dropped_lines": 12736
+    },
+    {
+      "path": "/Users/jakepajouhesh/Documents/Projects/NLP-ML/data/raw/sample.txt",
+      "skipped": false,
+      "skip_reason": null,
+      "input_chars": 384,
+      "output_chars": 384,
+      "input_lines": 2,
+      "kept_lines": 1,
+      "dropped_lines": 0
+    },
+    {
+      "path": "/Users/jakepajouhesh/Documents/Projects/NLP-ML/data/raw/treasure_island_--_robert_louis_stevenson__--_9ac6490f62f04adbfa062828297d600e_--_anna_s_archive.txt",
+      "skipped": false,
+      "skip_reason": null,
+      "input_chars": 440572,
+      "output_chars": 425677,
+      "input_lines": 12055,
+      "kept_lines": 10780,
+      "dropped_lines": 1274
+    }
+  ],
+  "params": {
+    "max_digit_ratio": 0.3,
+    "min_letter_ratio": 0.25,
+    "max_non_ascii_ratio": 0.05,
+    "noisy_filename_hints": [
+      "golden comics",
+      "comic",
+      "illustrated",
+      "golden press",
+      "create space",
+      "independent publishing"
+    ],
+    "boilerplate_patterns": [
+      "\\bcopyright\\b",
+      "\\ball rights reserved\\b",
+      "\\bprinted in\\b",
+      "\\bcatalog\\b",
+      "\\bcatalogue\\b",
+      "\\bcatalog card\\b",
+      "\\blibrary\\b",
+      "\\bdate due\\b",
+      "\\bproject gutenberg\\b",
+      "\\btranscrib",
+      "\\bebook\\b",
+      "\\bscanned\\b",
+      "\\bpublication\\b"
+    ]
+  }
+}

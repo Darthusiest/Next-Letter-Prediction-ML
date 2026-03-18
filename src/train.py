@@ -28,6 +28,7 @@ from src.config import (
     EARLY_STOPPING_PATIENCE,
     CHECKPOINT_DIR,
     RAW_DATA_DIR,
+    CLEAN_TEXT_DIR,
     MAX_CHARS,
     EMBED_DIM,
     HIDDEN_DIM,
@@ -54,12 +55,14 @@ logger = logging.getLogger(__name__)
 def train(
     data_paths: list = None,
     model_name: str = "mlp",
+    data_source: str = "raw",
     max_chars: int = None,
     context_length: int = CONTEXT_LENGTH,
     batch_size: int = BATCH_SIZE,
     lr: float = LEARNING_RATE,
     epochs: int = EPOCHS,
     eval_every: int = EVAL_EVERY_N_STEPS,
+    log_every: int = 200,
     early_stop_patience: int = EARLY_STOPPING_PATIENCE,
     checkpoint_dir: Path = None,
     seed: int = SEED,
@@ -83,17 +86,29 @@ def train(
     checkpoint_dir = run_dir  # for best.pt / checkpoint.pt
 
     if data_paths is None:
-        # Collect .txt files from data/raw/ and data/raw/nlp-ebooks/
-        raw_dir = Path(RAW_DATA_DIR)
-        ebook_dir = raw_dir / "nlp-ebooks"
-        data_paths = list(raw_dir.glob("*.txt"))
-        if ebook_dir.exists():
-            data_paths.extend(ebook_dir.glob("*.txt"))
-        if not data_paths:
-            raise FileNotFoundError(
-                f"No .txt files in {RAW_DATA_DIR} or {RAW_DATA_DIR / 'nlp-ebooks'}. "
-                "Put text files in data/raw/ or data/raw/nlp-ebooks/."
-            )
+        if data_source == "cleaned":
+            merged = Path(CLEAN_TEXT_DIR) / "merged_corpus.txt"
+            if merged.exists():
+                data_paths = [merged]
+            else:
+                data_paths = list(Path(CLEAN_TEXT_DIR).glob("*.txt"))
+            if not data_paths:
+                raise FileNotFoundError(
+                    f"No cleaned .txt files found in {CLEAN_TEXT_DIR}. "
+                    "Run: python tools/clean_corpus.py"
+                )
+        else:
+            # Collect .txt files from data/raw/ and data/raw/nlp-ebooks/
+            raw_dir = Path(RAW_DATA_DIR)
+            ebook_dir = raw_dir / "nlp-ebooks"
+            data_paths = list(raw_dir.glob("*.txt"))
+            if ebook_dir.exists():
+                data_paths.extend(ebook_dir.glob("*.txt"))
+            if not data_paths:
+                raise FileNotFoundError(
+                    f"No .txt files in {RAW_DATA_DIR} or {RAW_DATA_DIR / 'nlp-ebooks'}. "
+                    "Put text files in data/raw/ or data/raw/nlp-ebooks/."
+                )
 
     max_chars = max_chars or MAX_CHARS
     raw = load_text(data_paths, max_chars=max_chars)
@@ -144,7 +159,7 @@ def train(
         model.to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=lr)
         use_amp = device.type == "cuda"
-        scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+        scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
 
     best_val_loss = float("inf")
     patience_counter = 0
@@ -162,15 +177,26 @@ def train(
             context = context.to(device, non_blocking=non_blocking)
             target = target.to(device, non_blocking=non_blocking)
             optimizer.zero_grad(set_to_none=True)
-            with torch.cuda.amp.autocast(enabled=use_amp):
+            with torch.amp.autocast("cuda", enabled=use_amp):
                 logits = model(context)
                 loss = F.cross_entropy(logits, target)
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            if use_amp:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
             total_loss += loss.item()
             num_batches += 1
             step += 1
+            if log_every and step % log_every == 0:
+                logger.info(
+                    "Epoch %d step %d train_loss=%.4f",
+                    epoch + 1,
+                    step,
+                    total_loss / num_batches,
+                )
             if step % eval_every == 0:
                 val_loss, val_acc = evaluate(model, val_loader, device, is_ngram=False)
                 logger.info(

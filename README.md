@@ -48,6 +48,26 @@ You can also start from `.pdf` or `.epub` sources in `data/raw/nlp-ebooks/` and 
 
 After conversion, the resulting `.txt` files in `data/raw/` are handled exactly like any other text input.
 
+### Recommended: clean noisy OCR/boilerplate (strong mode)
+
+If your converted `.txt` files include OCR artifacts, page numbers, library stamps, or front-matter (common with scanned PDFs),
+run the strong cleaning script to produce a cleaner training corpus:
+
+```bash
+python tools/clean_corpus.py
+```
+
+This writes cleaned texts to `data/processed/clean_texts/` plus:
+
+- `data/processed/clean_texts/merged_corpus.txt` (single merged cleaned corpus)
+- `data/processed/cleaning_report.json` (what was dropped/skipped and why)
+
+To train on the cleaned corpus:
+
+```bash
+python -c "from src.train import train; train(model_name='mlp', data_source='cleaned')"
+```
+
 For a quick run you can limit corpus size in `src/config.py` by setting `MAX_CHARS = 500_000`.
 
 ## Run training
