@@ -7,7 +7,7 @@
   ],
   "outputs_dir": "/Users/jakepajouhesh/Documents/Projects/NLP-ML/data/processed/clean_texts",
   "total_input_chars": 1557912,
-  "total_output_chars": 1418380,
+  "total_output_chars": 1418129,
   "skipped_files": [],
   "file_reports": [
     {
@@ -25,10 +25,10 @@
       "skipped": false,
       "skip_reason": null,
       "input_chars": 911995,
-      "output_chars": 792124,
+      "output_chars": 791892,
       "input_lines": 30855,
-      "kept_lines": 18119,
-      "dropped_lines": 12736
+      "kept_lines": 18107,
+      "dropped_lines": 12748
     },
     {
       "path": "/Users/jakepajouhesh/Documents/Projects/NLP-ML/data/raw/sample.txt",
@@ -45,10 +45,10 @@
       "skipped": false,
       "skip_reason": null,
       "input_chars": 440572,
-      "output_chars": 425677,
+      "output_chars": 425658,
       "input_lines": 12055,
-      "kept_lines": 10780,
-      "dropped_lines": 1274
+      "kept_lines": 10779,
+      "dropped_lines": 1275
     }
   ],
   "params": {

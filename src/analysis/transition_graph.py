@@ -34,8 +34,8 @@ def run_transition_graph(
     text: str,
     vocab: CharVocab,
     output_dir: Path,
-    threshold: float = 0.02,
-    max_out_edges: int = 3,
+    threshold: float = 0.05,
+    max_out_edges: int = 2,
     show: bool = False,
 ) -> Path:
     plots_dir = output_dir / "plots"
@@ -47,7 +47,10 @@ def run_transition_graph(
     for ch in text:
         if ch in vocab.char2id:
             unigram[ch] = unigram.get(ch, 0) + 1
-    top_nodes = [c for c, _ in sorted(unigram.items(), key=lambda kv: kv[1], reverse=True)[:35]]
+    # Keep fewer nodes so the graph stays readable (matches tighter threshold).
+    top_nodes = [
+        c for c, _ in sorted(unigram.items(), key=lambda kv: kv[1], reverse=True)[:25]
+    ]
 
     G = nx.DiGraph()
 

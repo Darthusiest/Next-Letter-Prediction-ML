@@ -132,6 +132,23 @@ def is_noise_line(
     if dr > max_digit_ratio:
         return True, f"digit_ratio>{max_digit_ratio}"
 
+    # Layout-like OCR artifacts often look like: many 1-2 character tokens
+    # separated by spaces (e.g. "Z i a f g ie ...") with relatively high
+    # whitespace ratio but no “real” word-like tokens (length >= 3).
+    #
+    # This aims to reduce residual uncertainty concentrated in
+    # `whitespace_dense` / `newline_whitespace_dense` categories downstream.
+    spaces = sum(1 for ch in line if ch == " ")
+    whitespace_ratio = spaces / len(line) if line else 0.0
+    tokens = line.split()
+    if len(tokens) >= 8:
+        short_token_count = sum(1 for t in tokens if len(t) <= 2)
+        has_word_like_token = any(
+            (len(t) >= 3) and any(ch.isalpha() for ch in t) for t in tokens
+        )
+        if whitespace_ratio >= 0.35 and (not has_word_like_token) and short_token_count >= 6:
+            return True, "whitespace_dense_layout_ocr"
+
     lr = _letter_ratio(line)
     if lr < min_letter_ratio and len(line) >= 20:
         return True, f"letter_ratio<{min_letter_ratio}"

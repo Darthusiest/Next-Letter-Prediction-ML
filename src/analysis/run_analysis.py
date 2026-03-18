@@ -230,15 +230,24 @@ def run_post_training_analysis(config: AnalysisConfig) -> None:
         samples = entropy_confidence.compute_entropy_distribution(
             model_wrapper, loader, max_samples=config.max_entropy_samples
         )
-        entropies = [e for _, e, _, _ in samples]
+        entropies = [s.entropy for s in samples]
         hist_path = entropy_confidence.plot_entropy_hist(
             entropies, run_dir, show=config.show_plots
         )
         summary_path = entropy_confidence.write_confidence_summary(
             samples, reports_dir
         )
+        cat_entropy_path, cat_error_path = entropy_confidence.plot_entropy_and_error_by_category(
+            samples, run_dir, show=config.show_plots
+        )
+        residual_noise_path = entropy_confidence.write_residual_noise_report(
+            samples, reports_dir
+        )
         generated.append(hist_path)
         generated.append(summary_path)
+        generated.append(cat_entropy_path)
+        generated.append(cat_error_path)
+        generated.append(residual_noise_path)
     elif config.generate_entropy_plots:
         skipped.append("Model or corpus unavailable; skipping entropy/confidence plots.")
 

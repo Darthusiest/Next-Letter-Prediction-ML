@@ -62,6 +62,11 @@ This writes cleaned texts to `data/processed/clean_texts/` plus:
 - `data/processed/clean_texts/merged_corpus.txt` (single merged cleaned corpus)
 - `data/processed/cleaning_report.json` (what was dropped/skipped and why)
 
+The strong cleaner also includes a conservative heuristic to drop “layout-like”
+OCR lines that are dominated by whitespace plus many very short tokens
+(often seen in scanned book boilerplate), which tends to reduce the
+“least confident” uncertainty that clusters on non-prose artifacts.
+
 To train on the cleaned corpus:
 
 ```bash
@@ -174,11 +179,13 @@ Each run creates plots/reports under `outputs/runs/<run_id>/`:
   - `confusion_matrix.png`, `error_by_character.png`
   - `embeddings_pca_2d.png`, `embeddings_tsne_2d.png` (if embeddings exist)
   - `entropy_histogram.png` (if enabled)
+  - `entropy_by_context_category.png`, `error_by_context_category.png` (if enabled)
   - `context_similarity_heatmap.png`, `context_pca_2d.png` (and `context_pca_3d.png` if enabled)
   - `letter_transition_graph.png` (if enabled)
 - `reports/`:
   - `summary_report.txt`
   - `confidence_summary.txt` (if enabled)
+  - `residual_noise_diagnostics.txt` (if entropy analysis is enabled)
   - `similarity_report.txt` (if enabled)
 
 ## Default hyperparameters (first run)
