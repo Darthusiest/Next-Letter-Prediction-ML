@@ -13,6 +13,7 @@ if __name__ == "__main__" and __package__ is None:
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
 
+import contextlib
 import logging
 from pathlib import Path
 
@@ -30,6 +31,7 @@ from src.config import (
     RAW_DATA_DIR,
     CLEAN_TEXT_DIR,
     MAX_CHARS,
+    NUM_WORKERS,
     EMBED_DIM,
     HIDDEN_DIM,
     DROPOUT,
@@ -52,6 +54,22 @@ from src.analysis.run_analysis import run_post_training_analysis
 logger = logging.getLogger(__name__)
 
 
+def _amp_device_for_training(device: torch.device) -> str | None:
+    """Return autocast device_type string if mixed precision helps on this device."""
+    if device.type == "cuda":
+        return "cuda"
+    if device.type != "mps":
+        return None
+    v = torch.__version__.split("+")[0].split(".")
+    try:
+        major, minor = int(v[0]), int(v[1])
+    except (ValueError, IndexError):
+        return None
+    if (major, minor) >= (2, 0):
+        return "mps"
+    return None
+
+
 def train(
     data_paths: list = None,
     model_name: str = "mlp",
@@ -66,9 +84,12 @@ def train(
     early_stop_patience: int = EARLY_STOPPING_PATIENCE,
     checkpoint_dir: Path = None,
     seed: int = SEED,
+    num_workers: int | None = None,
+    compile_model: bool = False,
 ):
     set_seed(seed)
     device = get_device()
+    logger.info("Using device: %s", device)
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -123,8 +144,9 @@ def train(
     train_ds, val_ds, test_ds = get_splits(
         text, vocab, context_length=context_length
     )
+    nw = NUM_WORKERS if num_workers is None else num_workers
     train_loader, val_loader, test_loader = get_dataloaders(
-        train_ds, val_ds, test_ds, batch_size=batch_size
+        train_ds, val_ds, test_ds, batch_size=batch_size, num_workers=nw
     )
 
     if model_name == "ngram":
@@ -157,9 +179,20 @@ def train(
             dropout=DROPOUT,
         )
         model.to(device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-        use_amp = device.type == "cuda"
-        scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+        if compile_model:
+            try:
+                model = torch.compile(model)  # type: ignore[assignment]
+                logger.info("torch.compile enabled for model forward")
+            except Exception as e:
+                logger.warning("torch.compile skipped: %s", e)
+        try:
+            optimizer = torch.optim.Adam(model.parameters(), lr=lr, foreach=True)
+        except TypeError:
+            optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+        amp_device = _amp_device_for_training(device)
+        use_amp = amp_device is not None
+        use_scaler = amp_device == "cuda"
+        scaler = torch.amp.GradScaler("cuda", enabled=use_scaler)
 
     best_val_loss = float("inf")
     patience_counter = 0
@@ -177,10 +210,16 @@ def train(
             context = context.to(device, non_blocking=non_blocking)
             target = target.to(device, non_blocking=non_blocking)
             optimizer.zero_grad(set_to_none=True)
-            with torch.amp.autocast("cuda", enabled=use_amp):
+            if use_amp and amp_device == "cuda":
+                autocast_cm = torch.amp.autocast("cuda", enabled=True)
+            elif use_amp and amp_device == "mps":
+                autocast_cm = torch.amp.autocast("mps", dtype=torch.float16)
+            else:
+                autocast_cm = contextlib.nullcontext()
+            with autocast_cm:
                 logits = model(context)
                 loss = F.cross_entropy(logits, target)
-            if use_amp:
+            if use_scaler:
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
@@ -326,9 +365,48 @@ def train(
 
 
 def main():
-    """Entry point: run training with config defaults."""
+    """Entry point: argparse CLI over `train()`."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Train character-level next-character models (ngram, mlp, rnn, cnn)."
+    )
+    parser.add_argument(
+        "--model",
+        "-m",
+        default="mlp",
+        choices=["ngram", "mlp", "rnn", "cnn"],
+        help="Model architecture (default: mlp).",
+    )
+    parser.add_argument(
+        "--data-source",
+        default="raw",
+        choices=["raw", "cleaned"],
+        help='Corpus: "raw" from data/raw, or "cleaned" from data/processed/clean_texts.',
+    )
+    parser.add_argument(
+        "--max-chars",
+        type=int,
+        default=None,
+        help="Truncate corpus to this many characters (default: config MAX_CHARS).",
+    )
+    parser.add_argument(
+        "--eval-every",
+        type=int,
+        default=None,
+        help="Validation every N train steps (default: EVAL_EVERY_N_STEPS in config).",
+    )
+    args = parser.parse_args()
     setup_logging()
-    train(model_name="mlp")
+    kw = {}
+    if args.eval_every is not None:
+        kw["eval_every"] = args.eval_every
+    train(
+        model_name=args.model,
+        data_source=args.data_source,
+        max_chars=args.max_chars,
+        **kw,
+    )
 
 
 if __name__ == "__main__":

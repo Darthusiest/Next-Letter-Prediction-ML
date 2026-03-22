@@ -83,7 +83,6 @@ def _infer_model_kwargs_from_state(model_name: str, state: dict) -> dict:
             out["kernel_sizes"] = tuple(kernel_sizes)
         return out
 
-    # Transformer kwargs are not reliably inferrable from state_dict alone.
     return {}
 
 
@@ -93,6 +92,7 @@ def run_post_training_analysis(config: AnalysisConfig) -> None:
     reports_dir = run_dir / "reports"
 
     checkpoint_path = run_dir / "checkpoint.pt"
+    best_path = run_dir / "best.pt"
     metrics_path = run_dir / "metrics.json"
     loss_history_path = run_dir / "loss_history.json"
     train_corpus_path = run_dir / "train_corpus.txt"
@@ -106,15 +106,34 @@ def run_post_training_analysis(config: AnalysisConfig) -> None:
     metrics = load_json(metrics_path) if metrics_path.exists() else {}
     loss_history = load_json(loss_history_path) if loss_history_path.exists() else {}
 
-    # Load checkpoint and construct wrapper
-    if not checkpoint_path.exists():
-        skipped.append("No checkpoint.pt found; skipping model-based analyses.")
+    # Load checkpoint and construct wrapper.
+    #
+    # Correctness goal: avoid brittle “checkpoint copy during training” flows.
+    # Prefer `checkpoint.pt` if present; otherwise fall back to `best.pt`.
+    checkpoint_candidates = [checkpoint_path, best_path]
+    ckpt = None
+    checkpoint_loaded_from: Path | None = None
+    load_errors: list[str] = []
+    for candidate in checkpoint_candidates:
+        if not candidate.exists():
+            continue
+        try:
+            # Checkpoint was saved by this project and is trusted, so we allow
+            # loading full pickled objects (weights_only=False). This avoids
+            # PyTorch 2.6's stricter default which blocks custom classes.
+            ckpt = torch.load(candidate, map_location=device, weights_only=False)
+            checkpoint_loaded_from = candidate
+            break
+        except Exception as e:
+            load_errors.append(f"{candidate.name}: {repr(e)}")
+
+    if ckpt is None:
+        skipped.append(
+            "No valid checkpoint/best checkpoint found; skipping model-based analyses."
+            + (f" Load errors: {load_errors}" if load_errors else "")
+        )
         model_wrapper = None
     else:
-        # Checkpoint was saved by this project and is trusted, so we allow
-        # loading full pickled objects (weights_only=False). This avoids
-        # PyTorch 2.6's stricter default which blocks custom classes.
-        ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
         model_name = ckpt.get("model_name", "mlp")
         vocab_obj = ckpt.get("vocab")
         if not isinstance(vocab_obj, CharVocab):

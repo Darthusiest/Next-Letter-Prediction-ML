@@ -21,7 +21,7 @@ def evaluate(
     total_correct = 0
     total_tokens = 0
     non_blocking = device.type == "cuda"
-    with torch.no_grad():
+    with torch.inference_mode():
         for context, target in dataloader:
             context = context.to(device, non_blocking=non_blocking)
             target = target.to(device, non_blocking=non_blocking)

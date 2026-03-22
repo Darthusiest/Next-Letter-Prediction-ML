@@ -51,10 +51,31 @@ class CharVocab:
         self.char2id = char2id
         self.id2char = {i: c for c, i in char2id.items()}
         self.vocab_size = len(char2id)
+        # Fast path: O(1) ord→id table when code points are in a modest range (typical ASCII charset).
+        max_o = max((ord(c) for c in char2id), default=0)
+        if max_o <= 512:
+            self._ord_to_id: Optional[List[int]] = [-1] * (max_o + 1)
+            for c, i in char2id.items():
+                self._ord_to_id[ord(c)] = i
+        else:
+            self._ord_to_id = None
 
     def encode(self, s: str) -> List[int]:
         """Encode string to list of ids. All characters in s must be in vocab (use cleaned text with same charset)."""
-        return [self.char2id[c] for c in s]
+        t = self._ord_to_id
+        if t is None:
+            return [self.char2id[c] for c in s]
+        out: List[int] = []
+        append = out.append
+        for c in s:
+            o = ord(c)
+            if o < len(t):
+                v = t[o]
+                if v >= 0:
+                    append(v)
+                    continue
+            append(self.char2id[c])
+        return out
 
     def decode(self, ids: List[int]) -> str:
         """Decode list of ids to string. Unknown ids use '?' if not in id2char."""

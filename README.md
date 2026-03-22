@@ -1,6 +1,6 @@
 # Character-Level Next-Letter Prediction
 
-Predict the next character in English text from prior context. The model predicts **any character**: letters (upper- and lowercase), digits, and punctuation. Target performance is ~20% validation and test accuracy. Implements a clean baseline (n-gram and MLP) and is structured to scale to RNN, CNN, and transformer models.
+Predict the next character in English text from prior context. The model predicts **any character**: letters (upper- and lowercase), digits, and punctuation. Target performance is ~20% validation and test accuracy. Implements n-gram, MLP, RNN (LSTM), and CNN baselines.
 
 ## Setup
 
@@ -70,7 +70,7 @@ OCR lines that are dominated by whitespace plus many very short tokens
 To train on the cleaned corpus:
 
 ```bash
-python -c "from src.train import train; train(model_name='mlp', data_source='cleaned')"
+python -m src.train --model mlp --data-source cleaned
 ```
 
 For a quick run you can limit corpus size in `src/config.py` by setting `MAX_CHARS = 500_000`.
@@ -80,10 +80,10 @@ For a quick run you can limit corpus size in `src/config.py` by setting `MAX_CHA
 From the project root:
 
 ```bash
-python -m src.train
+python -m src.train --model mlp   # compare: --model rnn or --model cnn
 ```
 
-This trains the **MLP** baseline by default and writes per-run artifacts under `outputs/runs/<run_id>/`, including:
+This trains the selected model (default **MLP**) and writes per-run artifacts under `outputs/runs/<run_id>/`, including:
 
 - `checkpoint.pt` (model weights + vocab + config needed for analysis)
 - `loss_history.json`
@@ -95,26 +95,52 @@ At the end of training, the script automatically runs the full post-training ana
 
 To train the **n-gram** baseline instead (no GPU, fast):
 
-Edit `src/train.py` and call `train(model_name="ngram")` in `main()`, or from a script:
-
-```python
-from src.train import train
-train(model_name="ngram")
+```bash
+python -m src.train --model ngram
 ```
+
+### CLI reference
+
+| Flag | Description |
+|------|-------------|
+| `--model` / `-m` | `ngram`, `mlp`, `rnn`, or `cnn` (default: `mlp`). |
+| `--data-source` | `raw` (default) or `cleaned` (`data/processed/clean_texts/`). |
+| `--max-chars` | Truncate corpus length after load (overrides `MAX_CHARS` in config). |
+| `--eval-every` | Run validation every N training steps (default: `EVAL_EVERY_N_STEPS` in `src/config.py`). |
+
+Programmatic overrides (not exposed on the CLI) are in `train()` in `src/train.py`, e.g. `num_workers`, `compile_model`, `epochs`, `batch_size`.
+
+### Training speed and devices
+
+Training picks a device in this order: **CUDA → Apple MPS → CPU** (`get_device()` in `src/utils/__init__.py`). On CUDA, cuDNN benchmark, TF32, and mixed precision (`GradScaler` + autocast) are enabled. On MPS (PyTorch 2+), training uses float16 autocast without a scaler.
+
+The default `DataLoader` uses up to **four worker processes** and prefetch (`src/config.py` `NUM_WORKERS`, `src/dataset.py`) so batching overlaps with GPU/MPS work. Set `NUM_WORKERS = 0` in config or call `train(..., num_workers=0)` if workers cause issues on your platform.
+
+`CharVocab.encode()` uses a fast **ordinal lookup table** for typical ASCII-heavy text. The optimizer is Adam with **`foreach=True`** when supported. Optional **`torch.compile`** is available via `train(..., compile_model=True)`.
+
+Evaluation in `src/evaluate.py` uses `torch.inference_mode()`.
 
 ## Evaluate
 
-Load the checkpoint and run evaluation on the test set (example snippet):
+Load a checkpoint from a finished run and evaluate on the test set (replace `RUN_ID` with a folder under `outputs/runs/`). Prefer **`checkpoint.pt`**: it includes `model_kwargs` so RNN/CNN architectures match training. **`best.pt`** has weights only (defaults in `get_model` must match how you trained).
 
 ```python
+from pathlib import Path
 import torch
 from src.config import CONTEXT_LENGTH
 from src.dataset import get_splits, get_dataloaders
 from src.preprocess import load_text, clean_text
 from src.vocab import build_vocab_from_text
 from src.config import DEFAULT_ALLOWED_CHARS, RAW_DATA_DIR
-from src.models.mlp import MLPCharModel
+from src.models import get_model
 from src.evaluate import evaluate, perplexity
+from src.utils import get_device
+
+run_dir = Path("outputs/runs/RUN_ID")
+ckpt_path = run_dir / "checkpoint.pt"
+if not ckpt_path.exists():
+    ckpt_path = run_dir / "best.pt"
+ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
 paths = list(RAW_DATA_DIR.glob("*.txt"))
 text = clean_text(load_text(paths))
@@ -122,13 +148,17 @@ vocab = build_vocab_from_text(text, allowed_chars=DEFAULT_ALLOWED_CHARS)
 _, _, test_ds = get_splits(text, vocab, context_length=CONTEXT_LENGTH)
 test_loader = get_dataloaders(_, _, test_ds)[2]
 
-ckpt = torch.load("checkpoints/best.pt", weights_only=False)
-model = MLPCharModel(
+model_name = ckpt.get("model_name", "mlp")
+mkw = dict(ckpt.get("model_kwargs") or {})
+model = get_model(
+    model_name,
     vocab_size=ckpt["vocab"].vocab_size,
     context_length=ckpt["context_length"],
+    **mkw,
 )
 model.load_state_dict(ckpt["model_state"])
-loss, acc = evaluate(model, test_loader, torch.device("cpu"), is_ngram=False)
+device = get_device()
+loss, acc = evaluate(model, test_loader, device, is_ngram=False)
 print("Test loss:", loss, "perplexity:", perplexity(loss), "accuracy:", acc)
 ```
 
@@ -137,15 +167,29 @@ print("Test loss:", loss, "perplexity:", perplexity(loss), "accuracy:", acc)
 Sample text from the trained model:
 
 ```python
-from src.generate import generate
-from src.utils import get_device
+from pathlib import Path
 import torch
+from src.generate import generate
+from src.models import get_model
+from src.utils import get_device
 
-ckpt = torch.load("checkpoints/best.pt", weights_only=False)
-model = ckpt.get("model")  # for n-gram; for MLP load state into MLPCharModel
+run_dir = Path("outputs/runs/RUN_ID")
+ckpt_path = run_dir / "checkpoint.pt"
+if not ckpt_path.exists():
+    ckpt_path = run_dir / "best.pt"
+ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 vocab = ckpt["vocab"]
-# If MLP: build model, load_state_dict(ckpt["model_state"])
-# Then:
+model_name = ckpt.get("model_name", "mlp")
+mkw = dict(ckpt.get("model_kwargs") or {})
+model = get_model(
+    model_name,
+    vocab_size=vocab.vocab_size,
+    context_length=ckpt["context_length"],
+    **mkw,
+)
+model.load_state_dict(ckpt["model_state"])
+device = get_device()
+model.to(device)
 out = generate(model, vocab, seed="the ", length=100, temperature=0.9)
 print(out)
 ```
@@ -161,7 +205,9 @@ print(out)
 - `src/dataset.py` — sliding-window dataset and train/val/test split
 - `src/models/baseline_ngram.py` — n-gram baseline
 - `src/models/mlp.py` — MLP over fixed context
-- `src/train.py` — training loop
+- `src/models/rnn.py` — LSTM over context
+- `src/models/cnn.py` — Conv1d over character embeddings
+- `src/train.py` — training loop and CLI (`python -m src.train`)
 - `src/evaluate.py` — perplexity and accuracy
 - `src/generate.py` — autoregressive sampling with temperature
 - `src/analysis/` — post-training analysis pipeline (plots + reports)
@@ -201,13 +247,22 @@ Tuned for full character set (letters, digits, punctuation, case) and ~20% val/t
 | Dropout       | 0.25 |
 | Learning rate | 1e-3 |
 | Epochs        | 30 (early stopping) |
-| Optimizer     | Adam |
+| Optimizer     | Adam (foreach multi-tensor path when supported) |
+| DataLoader workers | Up to 4 (`NUM_WORKERS` in `src/config.py`) |
 
 ## Next steps (roadmap)
 
 1. N-gram baseline — done
 2. MLP baseline — done
-3. LSTM/GRU
-4. CNN over characters
-5. Causal transformer
-6. Analysis: vowel/consonant accuracy, confusion, context length, temperature
+3. LSTM/GRU — done (`rnn`)
+4. CNN over characters — done (`cnn`)
+5. Analysis: vowel/consonant accuracy, confusion, context length, temperature
+
+Train a model from the repo root (use the project venv):
+
+```bash
+source .venv/bin/activate
+python -m src.train --model mlp    # or: rnn, cnn, ngram
+python -m src.train --model rnn --data-source cleaned
+python -m src.train -h               # all CLI flags
+```

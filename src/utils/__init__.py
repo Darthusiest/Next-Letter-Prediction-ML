@@ -32,11 +32,19 @@ def set_seed(seed: int = SEED) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        manual_seed = getattr(torch.mps, "manual_seed", None)
+        if manual_seed is not None:
+            manual_seed(seed)
 
 
 def get_device() -> torch.device:
-    """Return torch device: cuda if available, else cpu."""
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    """Prefer CUDA, then Apple MPS, else CPU."""
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
 
 
 def setup_logging(level: int = logging.INFO) -> None:

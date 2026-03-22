@@ -10,9 +10,12 @@ for the project, to be used later when writing a paper or longer report.
 - Build a **character-level language model** whose task is to **predict the next
   character** given a sequence of previous characters.
 - Input text comes from **books, novels, articles, and other English corpora**.
-- The system should start with a **clean, understandable baseline** and be
-  structured so it can scale to **more advanced architectures** (RNNs, CNNs,
-  transformers).
+- The system should start with a **clean, understandable baseline** and support
+  **stronger character-level models** without unnecessary complexity.
+
+**Current codebase:** n‑gram, MLP, LSTM (`RNNCharModel`), and CNN (`CNNCharModel`)
+are implemented and selectable via `python -m src.train --model …`.
+Causal **transformer** models are not included (heavy for small GPUs; deferred).
 
 ---
 
@@ -107,7 +110,7 @@ analysis (not as hand‑crafted rules, but as guiding concepts):
 
 - **Affixes and morphology** (`un-`, `re-`, `pre-`, `-ing`, `-ed`, `-tion`…):  
   - Motivate **larger context windows (64–128)** and **sequence models**
-    (RNN/transformer) to capture morphological patterns.
+    (RNN/LSTM) to capture morphological patterns.
 
 - **Doubled letters** (`tt`, `ee`, `oo`, etc.):  
   - Highlight importance of **short‑range dependencies** (n‑grams, small CNN
@@ -129,48 +132,47 @@ These considerations inform:
 
 ## 5. Modeling options and roles
 
-The project plans to explore several model families, each with a clear role:
+Several model families are in scope, each with a clear role. **Status** is noted
+where the repo already implements the family.
 
-- **N‑gram baseline (order 4–5):**
+- **N‑gram baseline (order 4–5):** — **implemented** (`ngram`)
   - Captures **local letter combinations** (bigrams/trigrams).  
   - Very fast and interpretable.  
   - No long‑range dependencies; no parameter sharing across positions.  
   - Serves as the **simplest meaningful baseline** and a ceiling for purely
     local models.
 
-- **MLP over fixed window (first neural baseline):**
+- **MLP over fixed window (first neural baseline):** — **implemented** (`mlp`)
   - Input: fixed context of length \(L\) (e.g. 64) → embeddings → flatten →
     hidden layers → logits.  
   - Captures **within‑window spelling patterns**; simple to implement.  
   - Does not model variable‑length history beyond the window.
 
-- **RNN / LSTM / GRU:**  
+- **RNN / LSTM / GRU:** — **implemented** (`rnn`, LSTM in code)
   - Processes characters sequentially with a hidden state.  
   - Better for **variable‑length dependencies**, word‑level and short‑range
     morphology.  
   - Slower; long‑range dependencies still limited.
 
-- **CNN over characters:**  
+- **CNN over characters:** — **implemented** (`cnn`)
   - 1D convolutions over embeddings with small kernels (3–5).  
   - Excellent for **local spelling**, digraphs, trigraphs, doubled letters.  
   - Needs depth for long‑range effects; mostly a “local pattern” expert.
 
-- **Transformer:**  
-  - Causal self‑attention over previous characters only; uses positional
-    encodings.  
-  - Strong on **long‑range dependencies**, phrase‑ and sentence‑level
-    structure.  
-  - More data‑hungry and heavier; reserved for later stages.
+- **Causal transformer (self‑attention):** — **not in this repository**
+  - Would use causal self‑attention over previous characters and positional
+    encodings; strong on long‑range structure but more compute‑ and
+    memory‑intensive.  
+  - Omitted by design to keep training feasible on CPU and modest GPUs.
 
-Planned **build order**:
+**Build order (original plan) vs current:**
 
-1. N‑gram baseline.  
-2. Tiny MLP.  
-3. Full MLP baseline.  
-4. LSTM/GRU.  
-5. CNN.  
-6. Transformer.  
-7. Rich analysis tools.
+1. N‑gram baseline — done.  
+2. MLP baseline — done.  
+3. LSTM — done (`RNNCharModel`).  
+4. CNN — done (`CNNCharModel`).  
+5. Rich analysis tools — partially done (`src/analysis/`, post‑training pipeline).  
+6. Transformer — deferred / out of repo.
 
 ---
 
@@ -187,7 +189,7 @@ Planned **build order**:
     “vowel‑like vs consonant‑like”, punctuation roles, etc.
 
 - **Hidden dimension:** size of model’s internal representations (MLP hidden,
-  RNN hidden, transformer width).  
+  RNN hidden, CNN channels).  
   - 128–256 is a good starting range; larger can overfit small corpora.
 
 - **Projection layer & logits:** final linear layer maps hidden states to a
@@ -220,8 +222,9 @@ The project is organized into explicit phases:
    - Training, evaluation (loss, accuracy), and simple generation.
 
 3. **Phase 3 – Stronger models:**  
-   - Add RNN/LSTM/GRU, CNN, and transformer character models.  
-   - Compare on validation metrics and qualitative generation.
+   - **Done in repo:** RNN (LSTM) and CNN via `get_model` / `python -m src.train`.  
+   - **Not in repo:** transformer character model (see §5).  
+   - Compare runs on validation metrics and qualitative generation (`outputs/runs/<run_id>/`).
 
 4. **Phase 4 – Analysis:**  
    - Tools for: most common letters, vowel vs consonant performance, confusion

@@ -3,6 +3,7 @@ Configuration defaults for the character-level next-letter prediction pipeline.
 Single place for context length, batch size, paths, and model hyperparameters.
 """
 
+import os
 from pathlib import Path
 
 # Paths (relative to project root)
@@ -30,7 +31,8 @@ DEFAULT_ALLOWED_CHARS = set(
 
 # Dataloader
 BATCH_SIZE = 64
-NUM_WORKERS = 0  # 0 for CPU / simpler debugging
+# >0 overlaps batch prep with GPU/MPS work; use 0 only if debugging worker issues.
+NUM_WORKERS = min(4, os.cpu_count() or 1)
 
 # MLP defaults (slightly larger to reach ~20% val/test with full vocab)
 EMBED_DIM = 64

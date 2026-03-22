@@ -87,6 +87,9 @@ def get_dataloaders(
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """Build DataLoaders for train, val, test. Shuffle only train."""
     pin_memory = torch.cuda.is_available()
+    loader_kw = {}
+    if num_workers > 0:
+        loader_kw["prefetch_factor"] = 4
     train_loader = DataLoader(
         train_ds,
         batch_size=batch_size,
@@ -94,6 +97,7 @@ def get_dataloaders(
         num_workers=num_workers,
         pin_memory=pin_memory,
         persistent_workers=(num_workers > 0),
+        **loader_kw,
     )
     val_loader = DataLoader(
         val_ds,
@@ -102,6 +106,7 @@ def get_dataloaders(
         num_workers=num_workers,
         pin_memory=pin_memory,
         persistent_workers=(num_workers > 0),
+        **loader_kw,
     )
     test_loader = DataLoader(
         test_ds,
@@ -110,5 +115,6 @@ def get_dataloaders(
         num_workers=num_workers,
         pin_memory=pin_memory,
         persistent_workers=(num_workers > 0),
+        **loader_kw,
     )
     return train_loader, val_loader, test_loader
