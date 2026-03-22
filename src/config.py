@@ -39,13 +39,26 @@ EMBED_DIM = 64
 HIDDEN_DIM = 256
 DROPOUT = 0.25
 
+# RNN: extra LSTM layers multiply sequential work; 1 layer is the default for speed.
+RNN_NUM_LAYERS = 1
+
 # Training (enough to reach ~20% val/test accuracy with full char set)
 LEARNING_RATE = 1e-3
 EPOCHS = 30
 # Validation can be expensive on CPU; evaluate less frequently by default.
 EVAL_EVERY_N_STEPS = 5000
-EARLY_STOPPING_PATIENCE = 5  # epochs without val improvement
+# Early stopping uses **end-of-epoch** validation only (not eval_every mid-epoch).
+EARLY_STOPPING_PATIENCE = 3  # epochs without val improvement at epoch boundary
 CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"
+
+# Neural training: Adam L2; 0.0 keeps prior behavior. Try 1e-4–1e-2 for regularization ablations.
+WEIGHT_DECAY = 0.0
+# Soft targets for cross-entropy (neural models only); 0 disables.
+LABEL_SMOOTHING = 0.0
+# If True, ReduceLROnPlateau steps on epoch-end validation loss (neural only).
+USE_PLATEAU_LR = False
+LR_PLATEAU_FACTOR = 0.5
+LR_PLATEAU_PATIENCE = 1  # scheduler patience (epochs); independent of early stopping
 
 # N-gram baseline
 NGRAM_ORDER = 4

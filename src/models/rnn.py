@@ -45,10 +45,11 @@ class RNNCharModel(nn.Module):
         """
         # (B, L) -> (B, L, E)
         x = self.embed(context)
-        # LSTM: (B, L, E) -> (B, L, H)
-        output, _ = self.lstm(x)
-        # Use last time step representation for next-character prediction
-        last_hidden = output[:, -1, :]  # (B, H)
+        # LSTM must walk all L timesteps (inherent cost vs parallel MLP/CNN).
+        # Use final-layer final hidden state instead of full output to avoid
+        # allocating (B, L, H), which cuts memory traffic on long contexts.
+        _, (h_n, _) = self.lstm(x)
+        last_hidden = h_n[-1]  # (B, H)
         last_hidden = self.dropout(last_hidden)
         logits = self.fc(last_hidden)  # (B, V)
         return logits

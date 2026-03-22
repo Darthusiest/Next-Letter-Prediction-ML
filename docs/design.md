@@ -219,7 +219,8 @@ The project is organized into explicit phases:
 2. **Phase 2 – Baseline implementation:**  
    - Implement text ingest, preprocessing, vocabulary, dataset.  
    - Implement **n‑gram** and **MLP** baselines.  
-   - Training, evaluation (loss, accuracy), and simple generation.
+   - Training, evaluation (loss, accuracy), and simple generation.  
+   - **Training note:** early stopping patience counts **epochs without improvement on validation loss measured at the end of each epoch**; optional mid-epoch `eval_every` checks can still refresh `best.pt` but do not advance patience. Reported **test** metrics and default analysis use **best validation** weights (`best.pt`) when available.
 
 3. **Phase 3 – Stronger models:**  
    - **Done in repo:** RNN (LSTM) and CNN via `get_model` / `python -m src.train`.  

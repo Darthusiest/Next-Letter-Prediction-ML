@@ -39,17 +39,26 @@ from src.config import (
     NGRAM_SMOOTHING,
     DEFAULT_ALLOWED_CHARS,
     SEED,
+    RNN_NUM_LAYERS,
+    WEIGHT_DECAY,
+    LABEL_SMOOTHING,
+    USE_PLATEAU_LR,
+    LR_PLATEAU_FACTOR,
+    LR_PLATEAU_PATIENCE,
 )
 from src.preprocess import load_text, clean_text
-from src.vocab import build_vocab_from_text
+from src.vocab import build_vocab_from_text, CharVocab
 from src.dataset import get_splits, get_dataloaders
 from src.models import get_model
 from src.models.baseline_ngram import NGramModel
 from src.evaluate import evaluate
 from src.utils import set_seed, get_device, setup_logging, log_run
-from src.utils.io_utils import ensure_run_dir, save_json
+from src.utils.io_utils import ensure_run_dir, ensure_run_dir_path, save_json
 from src.analysis.config import AnalysisConfig
-from src.analysis.run_analysis import run_post_training_analysis
+from src.analysis.run_analysis import (
+    _infer_model_kwargs_from_state,
+    run_post_training_analysis,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +79,33 @@ def _amp_device_for_training(device: torch.device) -> str | None:
     return None
 
 
+def _evaluate_from_neural_checkpoint(
+    ckpt: dict,
+    test_loader,
+    device: torch.device,
+) -> tuple[float, float]:
+    """Load neural weights from a checkpoint dict and run test evaluate."""
+    from src.models import get_model
+
+    model_name = ckpt.get("model_name", "mlp")
+    vocab_obj = ckpt["vocab"]
+    vocab = vocab_obj if isinstance(vocab_obj, CharVocab) else CharVocab(vocab_obj)
+    context_length = ckpt.get("context_length", CONTEXT_LENGTH)
+    state = ckpt.get("model_state") or {}
+    model_kwargs = ckpt.get("model_kwargs") or _infer_model_kwargs_from_state(
+        model_name, state
+    )
+    eval_model = get_model(
+        model_name,
+        vocab_size=vocab.vocab_size,
+        context_length=context_length,
+        **model_kwargs,
+    )
+    eval_model.load_state_dict(state)
+    eval_model.to(device)
+    return evaluate(eval_model, test_loader, device, is_ngram=False)
+
+
 def train(
     data_paths: list = None,
     model_name: str = "mlp",
@@ -86,7 +122,15 @@ def train(
     seed: int = SEED,
     num_workers: int | None = None,
     compile_model: bool = False,
+    rnn_num_layers: int | None = None,
+    weight_decay: float | None = None,
+    label_smoothing: float | None = None,
+    use_plateau_lr: bool | None = None,
 ):
+    wd = WEIGHT_DECAY if weight_decay is None else weight_decay
+    ls = LABEL_SMOOTHING if label_smoothing is None else label_smoothing
+    plateau = USE_PLATEAU_LR if use_plateau_lr is None else use_plateau_lr
+
     set_seed(seed)
     device = get_device()
     logger.info("Using device: %s", device)
@@ -105,6 +149,10 @@ def train(
     run_id = time.strftime("%Y%m%d-%H%M%S")
     run_dir = ensure_run_dir(run_id)
     checkpoint_dir = run_dir  # for best.pt / checkpoint.pt
+
+    def _save_checkpoint(path: Path, payload: dict) -> None:
+        ensure_run_dir_path(path.parent)
+        torch.save(payload, path)
 
     if data_paths is None:
         if data_source == "cleaned":
@@ -163,13 +211,18 @@ def train(
         # No optimizer; just evaluate
         val_loss, val_acc = evaluate(model, val_loader, device, is_ngram=True)
         logger.info("N-gram val loss=%.4f acc=%.4f", val_loss, val_acc)
-        torch.save(
-            {"model": model, "vocab": vocab, "config": {"model": "ngram"}},
+        _save_checkpoint(
             checkpoint_dir / "ngram_baseline.pt",
+            {"model": model, "vocab": vocab, "config": {"model": "ngram"}},
         )
         return model, vocab
     else:
         # For neural models, delegate to get_model with the requested name.
+        rnn_kw = {}
+        if model_name == "rnn":
+            rnn_kw["num_layers"] = (
+                RNN_NUM_LAYERS if rnn_num_layers is None else rnn_num_layers
+            )
         model = get_model(
             model_name,
             vocab_size=vocab.vocab_size,
@@ -177,6 +230,7 @@ def train(
             embed_dim=EMBED_DIM,
             hidden_dim=HIDDEN_DIM,
             dropout=DROPOUT,
+            **rnn_kw,
         )
         model.to(device)
         if compile_model:
@@ -185,10 +239,39 @@ def train(
                 logger.info("torch.compile enabled for model forward")
             except Exception as e:
                 logger.warning("torch.compile skipped: %s", e)
+
+        neural_model_kwargs: dict = {
+            "embed_dim": EMBED_DIM,
+            "hidden_dim": HIDDEN_DIM,
+            "dropout": DROPOUT,
+        }
+        if model_name == "rnn":
+            neural_model_kwargs["num_layers"] = model.lstm.num_layers
+
+        def _best_pt_payload() -> dict:
+            return {
+                "model_state": model.state_dict(),
+                "vocab": vocab,
+                "context_length": context_length,
+                "model_name": model_name,
+                "model_kwargs": dict(neural_model_kwargs),
+            }
+
         try:
-            optimizer = torch.optim.Adam(model.parameters(), lr=lr, foreach=True)
+            optimizer = torch.optim.Adam(
+                model.parameters(), lr=lr, foreach=True, weight_decay=wd
+            )
         except TypeError:
-            optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+            optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
+        scheduler = None
+        if plateau:
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode="min",
+                factor=LR_PLATEAU_FACTOR,
+                patience=LR_PLATEAU_PATIENCE,
+            )
+            logger.info("ReduceLROnPlateau enabled on epoch-end val loss")
         amp_device = _amp_device_for_training(device)
         use_amp = amp_device is not None
         use_scaler = amp_device == "cuda"
@@ -218,7 +301,9 @@ def train(
                 autocast_cm = contextlib.nullcontext()
             with autocast_cm:
                 logits = model(context)
-                loss = F.cross_entropy(logits, target)
+                loss = F.cross_entropy(
+                    logits, target, label_smoothing=float(ls) if ls > 0 else 0.0
+                )
             if use_scaler:
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
@@ -245,14 +330,9 @@ def train(
                 model.train()
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
-                    torch.save(
-                        {
-                            "model_state": model.state_dict(),
-                            "vocab": vocab,
-                            "context_length": context_length,
-                            "model_name": model_name,
-                        },
+                    _save_checkpoint(
                         checkpoint_dir / "best.pt",
+                        _best_pt_payload(),
                     )
 
         epoch_train_loss = total_loss / num_batches
@@ -267,23 +347,47 @@ def train(
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             patience_counter = 0
-            torch.save(
-                {
-                    "model_state": model.state_dict(),
-                    "vocab": vocab,
-                    "context_length": context_length,
-                    "model_name": model_name,
-                },
+            _save_checkpoint(
                 checkpoint_dir / "best.pt",
+                _best_pt_payload(),
             )
         else:
             patience_counter += 1
+        if scheduler is not None:
+            scheduler.step(val_loss)
         if patience_counter >= early_stop_patience:
             logger.info("Early stopping after %d epochs", epoch + 1)
             break
 
-    # After training, evaluate on test set for logging
-    test_loss, test_acc = evaluate(model, test_loader, device, is_ngram=False)
+    # Test set: last-epoch weights vs best validation checkpoint
+    test_loss_final_epoch, test_acc_final_epoch = evaluate(
+        model, test_loader, device, is_ngram=False
+    )
+    best_path = checkpoint_dir / "best.pt"
+    if best_path.exists():
+        try:
+            best_ckpt = torch.load(
+                best_path, map_location=device, weights_only=False
+            )
+            test_loss, test_acc = _evaluate_from_neural_checkpoint(
+                best_ckpt, test_loader, device
+            )
+            logger.info(
+                "Test metrics use best.pt (best val). "
+                "final_epoch test_loss=%.4f acc=%.4f | best.pt test_loss=%.4f acc=%.4f",
+                test_loss_final_epoch,
+                test_acc_final_epoch,
+                test_loss,
+                test_acc,
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not evaluate best.pt; using final-epoch test metrics: %s", e
+            )
+            test_loss, test_acc = test_loss_final_epoch, test_acc_final_epoch
+    else:
+        logger.warning("best.pt missing; test metrics use final-epoch weights")
+        test_loss, test_acc = test_loss_final_epoch, test_acc_final_epoch
 
     # Save loss history for analysis
     loss_history = {
@@ -293,24 +397,19 @@ def train(
     }
     save_json(loss_history, run_dir / "loss_history.json")
 
-    # Save checkpoint compatible with analysis
-    model_kwargs = {
-        "embed_dim": EMBED_DIM,
-        "hidden_dim": HIDDEN_DIM,
-        "dropout": DROPOUT,
-    }
-    torch.save(
+    # Last-epoch checkpoint (for debugging / calibration compare vs best.pt)
+    _save_checkpoint(
+        run_dir / "checkpoint.pt",
         {
             "model_name": model_name,
             "model_state": model.state_dict(),
             "vocab": vocab,
             "context_length": context_length,
-            "model_kwargs": model_kwargs,
+            "model_kwargs": dict(neural_model_kwargs),
         },
-        run_dir / "checkpoint.pt",
     )
 
-    # Save metrics summary
+    # Save metrics summary (primary test_* = best validation weights)
     metrics = {
         "run_id": run_id,
         "model": model_name,
@@ -318,6 +417,13 @@ def train(
         "val_loss_best": best_val_loss,
         "test_loss": test_loss,
         "test_accuracy": test_acc,
+        "test_loss_final_epoch": test_loss_final_epoch,
+        "test_accuracy_final_epoch": test_acc_final_epoch,
+        "metrics_checkpoint_policy": (
+            "test_loss and test_accuracy are from best.pt when available; "
+            "test_*_final_epoch are from last training step. "
+            "checkpoint.pt stores last-epoch weights; analysis prefers best.pt first."
+        ),
         "num_chars": len(text),
         "vocab_size": vocab.vocab_size,
     }
@@ -335,6 +441,9 @@ def train(
             "dropout": DROPOUT,
             "learning_rate": lr,
             "epochs": epochs,
+            "weight_decay": wd,
+            "label_smoothing": ls,
+            "use_plateau_lr": plateau,
         },
         "data": {
             "num_chars": len(text),
@@ -347,6 +456,8 @@ def train(
             "best_val_loss": best_val_loss,
             "test_loss": test_loss,
             "test_acc": test_acc,
+            "test_loss_final_epoch": test_loss_final_epoch,
+            "test_accuracy_final_epoch": test_acc_final_epoch,
         },
     }
     log_run(run_info)
@@ -396,11 +507,50 @@ def main():
         default=None,
         help="Validation every N train steps (default: EVAL_EVERY_N_STEPS in config).",
     )
+    parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="Enable torch.compile on the model (can help RNN/CNN on some backends).",
+    )
+    parser.add_argument(
+        "--rnn-layers",
+        type=int,
+        default=None,
+        metavar="N",
+        help="LSTM depth for --model rnn (default: RNN_NUM_LAYERS in config).",
+    )
+    parser.add_argument(
+        "--weight-decay",
+        type=float,
+        default=None,
+        help="Adam weight decay (default: WEIGHT_DECAY in config).",
+    )
+    parser.add_argument(
+        "--label-smoothing",
+        type=float,
+        default=None,
+        help="Cross-entropy label smoothing, neural only (default: LABEL_SMOOTHING).",
+    )
+    parser.add_argument(
+        "--plateau-lr",
+        action="store_true",
+        help="Enable ReduceLROnPlateau on epoch-end val loss (neural only).",
+    )
     args = parser.parse_args()
     setup_logging()
     kw = {}
     if args.eval_every is not None:
         kw["eval_every"] = args.eval_every
+    if args.compile:
+        kw["compile_model"] = True
+    if args.rnn_layers is not None:
+        kw["rnn_num_layers"] = args.rnn_layers
+    if args.weight_decay is not None:
+        kw["weight_decay"] = args.weight_decay
+    if args.label_smoothing is not None:
+        kw["label_smoothing"] = args.label_smoothing
+    if args.plateau_lr:
+        kw["use_plateau_lr"] = True
     train(
         model_name=args.model,
         data_source=args.data_source,

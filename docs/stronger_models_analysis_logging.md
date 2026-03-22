@@ -14,15 +14,33 @@ As of the current tree:
 - **Models in `get_model` / training:** `ngram`, `mlp`, `rnn`, `cnn`. There is
   **no** transformer module in the repository.
 - **Training entrypoint:** `python -m src.train` with argparse (`--model`,
-  `--data-source`, `--max-chars`, `--eval-every`); programmatic `train()` in
-  `src/train.py` supports further knobs (e.g. `num_workers`, `compile_model`).
+  `--data-source`, `--max-chars`, `--eval-every`, `--compile`, `--rnn-layers`,
+  `--weight-decay`, `--label-smoothing`, `--plateau-lr`); programmatic `train()`
+  in `src/train.py` supports further knobs (e.g. `num_workers`, `compile_model`).
 - **Device selection:** CUDA if available, else Apple **MPS**, else CPU
   (`src/utils/__init__.py`). Mixed precision: CUDA uses `GradScaler` + autocast;
   MPS uses float16 autocast (PyTorch 2+). See **README** for dataloader workers,
   fast `CharVocab.encode`, Adam `foreach`, and `torch.inference_mode` in eval.
 - **Artifacts per run:** `outputs/runs/<run_id>/` — `train_corpus.txt`,
-  `checkpoint.pt` (includes `model_kwargs`), `best.pt`, `metrics.json`,
-  `loss_history.json`, plus analysis under `plots/` and `reports/`.
+  `best.pt` (best **validation** weights; includes `model_kwargs`),
+  `checkpoint.pt` (**last training step** weights + `model_kwargs`),
+  `metrics.json`, `loss_history.json`, plus analysis under `plots/` and `reports/`.
+- **Metrics policy:** `metrics.json` fields **`test_loss` / `test_accuracy`** are
+  computed from **`best.pt`** when present; **`test_*_final_epoch`** use the
+  last-step weights. Field **`metrics_checkpoint_policy`** explains this in-file.
+- **Analysis checkpoint order:** `run_post_training_analysis` loads **`best.pt`
+  first**, then `checkpoint.pt`, so prediction plots and model-based analyses
+  align with best validation by default.
+- **Calibration report:** when both checkpoints exist,
+  `reports/checkpoint_comparison.txt` compares entropy and top-k next-char
+  probabilities on sample contexts (`pre`, `th`, `ing`) for best vs last epoch
+  (`src/analysis/calibration_compare.py`).
+- **Early stopping:** patience counts **epochs without improvement on
+  end-of-epoch** validation only (`EARLY_STOPPING_PATIENCE` in `config.py`;
+  default 3). Mid-epoch `eval_every` can still refresh `best.pt` but does not
+  advance patience (see README / `docs/design.md`).
+- **Regularization (neural):** config `WEIGHT_DECAY`, `LABEL_SMOOTHING`,
+  optional `USE_PLATEAU_LR` + `ReduceLROnPlateau` on epoch-end val loss.
 - **Logging:** `logs/runs/<run_id>.json` via `log_run()`.
 - **Analysis:** `src/analysis/run_analysis.py` (`run_post_training_analysis`);
   optional attention plots only apply if a model exposes attention (no

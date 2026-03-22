@@ -4,10 +4,13 @@ Entry point for running post-training analysis.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import List
 
 import torch
+
+logger = logging.getLogger(__name__)
 
 from .config import AnalysisConfig
 from . import (
@@ -108,9 +111,9 @@ def run_post_training_analysis(config: AnalysisConfig) -> None:
 
     # Load checkpoint and construct wrapper.
     #
-    # Correctness goal: avoid brittle “checkpoint copy during training” flows.
-    # Prefer `checkpoint.pt` if present; otherwise fall back to `best.pt`.
-    checkpoint_candidates = [checkpoint_path, best_path]
+    # Prefer best.pt (best validation weights) for plots/metrics alignment;
+    # fall back to checkpoint.pt (last epoch, full metadata).
+    checkpoint_candidates = [best_path, checkpoint_path]
     ckpt = None
     checkpoint_loaded_from: Path | None = None
     load_errors: list[str] = []
@@ -160,6 +163,13 @@ def run_post_training_analysis(config: AnalysisConfig) -> None:
             model_type=model_name,
             context_length=context_length,
         )
+
+    from .calibration_compare import write_checkpoint_comparison_report
+
+    cmp_report = write_checkpoint_comparison_report(run_dir, device)
+    if cmp_report is not None:
+        generated.append(cmp_report)
+        logger.info("Wrote checkpoint comparison report to %s", cmp_report)
 
     # 1) Training plots
     if config.generate_training_plots and loss_history:

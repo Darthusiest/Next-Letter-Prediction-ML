@@ -2,6 +2,8 @@
 Character-level models for next-letter prediction.
 """
 
+from ..config import RNN_NUM_LAYERS
+
 from .baseline_ngram import NGramModel
 from .mlp import MLPCharModel
 from .rnn import RNNCharModel
@@ -28,7 +30,7 @@ def get_model(name: str, vocab_size: int, context_length: int, **kwargs):
             context_length=context_length,
             embed_dim=kwargs.get("embed_dim", 64),
             hidden_dim=kwargs.get("hidden_dim", 256),
-            num_layers=kwargs.get("num_layers", 2),
+            num_layers=kwargs.get("num_layers", RNN_NUM_LAYERS),
             dropout=kwargs.get("dropout", 0.2),
         )
     if name == "cnn":

@@ -12,15 +12,25 @@ def get_runs_root() -> Path:
     return PROJECT_ROOT / "outputs" / "runs"
 
 
+def ensure_run_dir_path(run_dir: Path) -> Path:
+    """
+    Ensure a run directory tree exists (run folder plus plots/ and reports/).
+    Safe to call repeatedly; use before checkpoint saves if the folder may have
+    been removed after training started.
+    """
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "plots").mkdir(exist_ok=True)
+    (run_dir / "reports").mkdir(exist_ok=True)
+    return run_dir
+
+
 def ensure_run_dir(run_id: str) -> Path:
     """
     Create (if needed) and return the directory for a given run_id:
     outputs/runs/<run_id>/
     """
     run_dir = get_runs_root() / run_id
-    run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "plots").mkdir(exist_ok=True)
-    (run_dir / "reports").mkdir(exist_ok=True)
+    ensure_run_dir_path(run_dir)
     return run_dir
 
 

@@ -85,13 +85,19 @@ python -m src.train --model mlp   # compare: --model rnn or --model cnn
 
 This trains the selected model (default **MLP**) and writes per-run artifacts under `outputs/runs/<run_id>/`, including:
 
-- `checkpoint.pt` (model weights + vocab + config needed for analysis)
+- `best.pt` — weights at **best validation loss** (includes `model_name`, `model_kwargs`, `vocab`, `context_length`)
+- `checkpoint.pt` — weights after the **last training step** (same metadata shape; use to study overfitting vs `best.pt`)
 - `loss_history.json`
-- `metrics.json`
+- `metrics.json` — **`test_loss` / `test_accuracy` are computed on `best.pt`** when it exists; `test_*_final_epoch` use last-step weights (see `metrics_checkpoint_policy` in the file)
 - `train_corpus.txt` (cleaned corpus snapshot)
-- `plots/` and `reports/` (post-training analysis outputs)
+- `plots/` and `reports/` (post-training analysis outputs; includes `reports/checkpoint_comparison.txt` when both checkpoints exist)
 
 At the end of training, the script automatically runs the full post-training analysis pipeline.
+
+### Checkpoints, metrics, and analysis
+
+- **Early stopping** uses **end-of-epoch** validation loss only. If `eval_every` runs mid-epoch, it can still update `best.pt` and `best_val_loss`, but it does **not** increment early-stopping patience (patience resets only when epoch-end val improves). Tune `EARLY_STOPPING_PATIENCE` in [`src/config.py`](src/config.py) (default **3** epochs without epoch-end improvement).
+- **`run_post_training_analysis`** loads **`best.pt` first**, then `checkpoint.pt`, so prediction plots and most model-based analyses match **best validation** weights by default.
 
 To train the **n-gram** baseline instead (no GPU, fast):
 
@@ -107,8 +113,35 @@ python -m src.train --model ngram
 | `--data-source` | `raw` (default) or `cleaned` (`data/processed/clean_texts/`). |
 | `--max-chars` | Truncate corpus length after load (overrides `MAX_CHARS` in config). |
 | `--eval-every` | Run validation every N training steps (default: `EVAL_EVERY_N_STEPS` in `src/config.py`). |
+| `--compile` | Enable `torch.compile` on the model (sometimes helps RNN/CNN on GPU/MPS). |
+| `--rnn-layers` | LSTM layer count for `--model rnn` (default: `RNN_NUM_LAYERS` in `src/config.py`, currently 1). |
+| `--weight-decay` | Adam L2 penalty (default: `WEIGHT_DECAY` in config; `0.0` preserves old behavior). |
+| `--label-smoothing` | Neural cross-entropy label smoothing (default: `LABEL_SMOOTHING`, usually `0.0`). |
+| `--plateau-lr` | Enable `ReduceLROnPlateau` on epoch-end val loss (neural only; off by default). |
 
-Programmatic overrides (not exposed on the CLI) are in `train()` in `src/train.py`, e.g. `num_workers`, `compile_model`, `epochs`, `batch_size`.
+Other overrides live on `train()` in `src/train.py`, e.g. `num_workers`, `epochs`, `batch_size`.
+
+#### Regularization ablations (fair comparison)
+
+Use the same `--max-chars`, `--data-source`, and seed (set `SEED` in config) when comparing runs. Examples:
+
+```bash
+# Baseline (defaults)
+python -m src.train --model mlp --data-source cleaned --max-chars 500000
+
+# Stronger L2
+python -m src.train --model mlp --data-source cleaned --max-chars 500000 --weight-decay 1e-4
+
+# Higher dropout: set DROPOUT = 0.4 in src/config.py (or add a CLI later)
+```
+
+Report **`val_loss_best`** from `metrics.json` and **`test_loss` / `test_accuracy`** (these are **test@best**).
+
+#### RNN vs MLP speed (expect a large gap)
+
+An LSTM walks the context **one timestep at a time** per layer (`CONTEXT_LENGTH` × `RNN_NUM_LAYERS`), while an MLP over the same window is mostly **parallel matmuls**. On Apple MPS especially, RNNs are often several times slower per step than MLPs—that is normal, not a misconfiguration.
+
+To make RNN experiments tolerable: use **`--compile`**, keep **`RNN_NUM_LAYERS = 1`** (default), try a larger **`BATCH_SIZE`** if memory allows, shorten **`CONTEXT_LENGTH`** for exploratory runs, or cap **`--max-chars`**. If you only need a strong cheap baseline, **MLP or CNN** is the better default; keep RNN when you explicitly care about recurrent order effects.
 
 ### Training speed and devices
 
@@ -116,13 +149,13 @@ Training picks a device in this order: **CUDA → Apple MPS → CPU** (`get_devi
 
 The default `DataLoader` uses up to **four worker processes** and prefetch (`src/config.py` `NUM_WORKERS`, `src/dataset.py`) so batching overlaps with GPU/MPS work. Set `NUM_WORKERS = 0` in config or call `train(..., num_workers=0)` if workers cause issues on your platform.
 
-`CharVocab.encode()` uses a fast **ordinal lookup table** for typical ASCII-heavy text. The optimizer is Adam with **`foreach=True`** when supported. Optional **`torch.compile`** is available via `train(..., compile_model=True)`.
+`CharVocab.encode()` uses a fast **ordinal lookup table** for typical ASCII-heavy text. The optimizer is Adam with **`foreach=True`** when supported. Optional **`torch.compile`**: CLI **`--compile`** or `train(..., compile_model=True)`.
 
 Evaluation in `src/evaluate.py` uses `torch.inference_mode()`.
 
 ## Evaluate
 
-Load a checkpoint from a finished run and evaluate on the test set (replace `RUN_ID` with a folder under `outputs/runs/`). Prefer **`checkpoint.pt`**: it includes `model_kwargs` so RNN/CNN architectures match training. **`best.pt`** has weights only (defaults in `get_model` must match how you trained).
+Load a checkpoint from a finished run and evaluate on the test set (replace `RUN_ID` with a folder under `outputs/runs/`). Prefer **`best.pt`** to match **`metrics.json`** (`test_loss` / `test_accuracy`). Use **`checkpoint.pt`** for **last-epoch** weights. Both include `model_kwargs` on new runs; older `best.pt` files may rely on shape inference.
 
 ```python
 from pathlib import Path
@@ -137,9 +170,9 @@ from src.evaluate import evaluate, perplexity
 from src.utils import get_device
 
 run_dir = Path("outputs/runs/RUN_ID")
-ckpt_path = run_dir / "checkpoint.pt"
+ckpt_path = run_dir / "best.pt"
 if not ckpt_path.exists():
-    ckpt_path = run_dir / "best.pt"
+    ckpt_path = run_dir / "checkpoint.pt"
 ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
 paths = list(RAW_DATA_DIR.glob("*.txt"))
@@ -174,9 +207,9 @@ from src.models import get_model
 from src.utils import get_device
 
 run_dir = Path("outputs/runs/RUN_ID")
-ckpt_path = run_dir / "checkpoint.pt"
+ckpt_path = run_dir / "best.pt"
 if not ckpt_path.exists():
-    ckpt_path = run_dir / "best.pt"
+    ckpt_path = run_dir / "checkpoint.pt"
 ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 vocab = ckpt["vocab"]
 model_name = ckpt.get("model_name", "mlp")
@@ -230,6 +263,7 @@ Each run creates plots/reports under `outputs/runs/<run_id>/`:
   - `letter_transition_graph.png` (if enabled)
 - `reports/`:
   - `summary_report.txt`
+  - `checkpoint_comparison.txt` (best.pt vs last-epoch entropy/top-k on sample contexts, when both checkpoints exist)
   - `confidence_summary.txt` (if enabled)
   - `residual_noise_diagnostics.txt` (if entropy analysis is enabled)
   - `similarity_report.txt` (if enabled)
@@ -247,7 +281,8 @@ Tuned for full character set (letters, digits, punctuation, case) and ~20% val/t
 | Dropout       | 0.25 |
 | Learning rate | 1e-3 |
 | Epochs        | 30 (early stopping) |
-| Optimizer     | Adam (foreach multi-tensor path when supported) |
+| Early stop patience | 3 epochs without **epoch-end** val improvement |
+| Optimizer     | Adam (foreach multi-tensor path when supported; optional `WEIGHT_DECAY`) |
 | DataLoader workers | Up to 4 (`NUM_WORKERS` in `src/config.py`) |
 
 ## Next steps (roadmap)
