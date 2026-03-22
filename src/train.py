@@ -40,11 +40,14 @@ from src.config import (
     DEFAULT_ALLOWED_CHARS,
     SEED,
     RNN_NUM_LAYERS,
+    MLP_NUM_HIDDEN_LAYERS,
     WEIGHT_DECAY,
     LABEL_SMOOTHING,
     USE_PLATEAU_LR,
     LR_PLATEAU_FACTOR,
     LR_PLATEAU_PATIENCE,
+    GRAD_CLIP_NORM,
+    WARMUP_STEPS,
 )
 from src.preprocess import load_text, clean_text
 from src.vocab import build_vocab_from_text, CharVocab
@@ -126,10 +129,14 @@ def train(
     weight_decay: float | None = None,
     label_smoothing: float | None = None,
     use_plateau_lr: bool | None = None,
+    grad_clip_norm: float | None = None,
+    warmup_steps: int | None = None,
 ):
     wd = WEIGHT_DECAY if weight_decay is None else weight_decay
     ls = LABEL_SMOOTHING if label_smoothing is None else label_smoothing
     plateau = USE_PLATEAU_LR if use_plateau_lr is None else use_plateau_lr
+    clip = GRAD_CLIP_NORM if grad_clip_norm is None else grad_clip_norm
+    warmup = WARMUP_STEPS if warmup_steps is None else warmup_steps
 
     set_seed(seed)
     device = get_device()
@@ -223,6 +230,13 @@ def train(
             rnn_kw["num_layers"] = (
                 RNN_NUM_LAYERS if rnn_num_layers is None else rnn_num_layers
             )
+        mlp_kw = {}
+        if model_name == "mlp":
+            mlp_kw["num_hidden_layers"] = (
+                MLP_NUM_HIDDEN_LAYERS
+                if mlp_num_hidden_layers is None
+                else mlp_num_hidden_layers
+            )
         model = get_model(
             model_name,
             vocab_size=vocab.vocab_size,
@@ -231,6 +245,7 @@ def train(
             hidden_dim=HIDDEN_DIM,
             dropout=DROPOUT,
             **rnn_kw,
+            **mlp_kw,
         )
         model.to(device)
         if compile_model:
@@ -258,20 +273,48 @@ def train(
             }
 
         try:
-            optimizer = torch.optim.Adam(
+            optimizer = torch.optim.AdamW(
                 model.parameters(), lr=lr, foreach=True, weight_decay=wd
             )
         except TypeError:
-            optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=wd)
-        scheduler = None
+            optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
+
+        total_train_steps = epochs * len(train_loader)
+        schedulers_parts = []
+        milestones = []
+        if warmup > 0:
+            schedulers_parts.append(
+                torch.optim.lr_scheduler.LinearLR(
+                    optimizer, start_factor=1e-3, end_factor=1.0, total_iters=warmup
+                )
+            )
+            milestones.append(warmup)
+            logger.info("Linear LR warmup over %d steps", warmup)
+        cosine_steps = max(total_train_steps - warmup, 1)
+        schedulers_parts.append(
+            torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=cosine_steps, eta_min=lr * 0.01
+            )
+        )
+        step_scheduler = (
+            torch.optim.lr_scheduler.SequentialLR(
+                optimizer, schedulers=schedulers_parts, milestones=milestones
+            )
+            if milestones
+            else schedulers_parts[0]
+        )
+        logger.info(
+            "Cosine annealing over %d steps (min LR %.1e)", cosine_steps, lr * 0.01
+        )
+        plateau_scheduler = None
         if plateau:
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
                 optimizer,
                 mode="min",
                 factor=LR_PLATEAU_FACTOR,
                 patience=LR_PLATEAU_PATIENCE,
             )
-            logger.info("ReduceLROnPlateau enabled on epoch-end val loss")
+            logger.info("ReduceLROnPlateau also enabled on epoch-end val loss")
         amp_device = _amp_device_for_training(device)
         use_amp = amp_device is not None
         use_scaler = amp_device == "cuda"
@@ -282,6 +325,7 @@ def train(
     epochs_list = []
     train_loss_history = []
     val_loss_history = []
+    global_step = 0
 
     for epoch in range(epochs):
         model.train()
@@ -306,14 +350,21 @@ def train(
                 )
             if use_scaler:
                 scaler.scale(loss).backward()
+                if clip > 0:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 loss.backward()
+                if clip > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
                 optimizer.step()
+            step_scheduler.step()
             total_loss += loss.item()
             num_batches += 1
             step += 1
+            global_step += 1
             if log_every and step % log_every == 0:
                 logger.info(
                     "Epoch %d step %d train_loss=%.4f",
@@ -353,8 +404,8 @@ def train(
             )
         else:
             patience_counter += 1
-        if scheduler is not None:
-            scheduler.step(val_loss)
+        if plateau_scheduler is not None:
+            plateau_scheduler.step(val_loss)
         if patience_counter >= early_stop_patience:
             logger.info("Early stopping after %d epochs", epoch + 1)
             break
@@ -444,6 +495,13 @@ def train(
             "weight_decay": wd,
             "label_smoothing": ls,
             "use_plateau_lr": plateau,
+            "grad_clip_norm": clip,
+            "warmup_steps": warmup,
+            **(
+                {"mlp_num_hidden_layers": model.num_hidden_layers}
+                if model_name == "mlp"
+                else {}
+            ),
         },
         "data": {
             "num_chars": len(text),
@@ -523,7 +581,7 @@ def main():
         "--weight-decay",
         type=float,
         default=None,
-        help="Adam weight decay (default: WEIGHT_DECAY in config).",
+        help="AdamW weight decay (default: WEIGHT_DECAY in config).",
     )
     parser.add_argument(
         "--label-smoothing",
@@ -534,7 +592,32 @@ def main():
     parser.add_argument(
         "--plateau-lr",
         action="store_true",
-        help="Enable ReduceLROnPlateau on epoch-end val loss (neural only).",
+        help="Enable ReduceLROnPlateau (default follows USE_PLATEAU_LR in config).",
+    )
+    parser.add_argument(
+        "--no-plateau-lr",
+        action="store_true",
+        help="Disable ReduceLROnPlateau even if USE_PLATEAU_LR is True in config.",
+    )
+    parser.add_argument(
+        "--grad-clip",
+        type=float,
+        default=None,
+        help="Max gradient L2 norm (default: GRAD_CLIP_NORM in config; 0 disables).",
+    )
+    parser.add_argument(
+        "--warmup-steps",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Linear LR warmup steps (default: WARMUP_STEPS in config; 0 disables).",
+    )
+    parser.add_argument(
+        "--mlp-hidden-layers",
+        type=int,
+        default=None,
+        metavar="N",
+        help="MLP hidden Linear depth for --model mlp (default: MLP_NUM_HIDDEN_LAYERS in config).",
     )
     args = parser.parse_args()
     setup_logging()
@@ -549,8 +632,16 @@ def main():
         kw["weight_decay"] = args.weight_decay
     if args.label_smoothing is not None:
         kw["label_smoothing"] = args.label_smoothing
-    if args.plateau_lr:
+    if args.no_plateau_lr:
+        kw["use_plateau_lr"] = False
+    elif args.plateau_lr:
         kw["use_plateau_lr"] = True
+    if args.grad_clip is not None:
+        kw["grad_clip_norm"] = args.grad_clip
+    if args.warmup_steps is not None:
+        kw["warmup_steps"] = args.warmup_steps
+    if args.mlp_hidden_layers is not None:
+        kw["mlp_num_hidden_layers"] = args.mlp_hidden_layers
     train(
         model_name=args.model,
         data_source=args.data_source,

@@ -39,8 +39,9 @@ As of the current tree:
   end-of-epoch** validation only (`EARLY_STOPPING_PATIENCE` in `config.py`;
   default 3). Mid-epoch `eval_every` can still refresh `best.pt` but does not
   advance patience (see README / `docs/design.md`).
-- **Regularization (neural):** config `WEIGHT_DECAY`, `LABEL_SMOOTHING`,
-  optional `USE_PLATEAU_LR` + `ReduceLROnPlateau` on epoch-end val loss.
+- **Regularization (neural):** config `WEIGHT_DECAY` (default `1e-4`),
+  `LABEL_SMOOTHING` (default `0.05`), and `USE_PLATEAU_LR` + `ReduceLROnPlateau`
+  on epoch-end val loss (on by default; CLI `--no-plateau-lr` to disable).
 - **Logging:** `logs/runs/<run_id>.json` via `log_run()`.
 - **Analysis:** `src/analysis/run_analysis.py` (`run_post_training_analysis`);
   optional attention plots only apply if a model exposes attention (no
@@ -85,7 +86,9 @@ High‑level flow, extending the current baseline:
 - **Models**
   - Baselines:
     - `NGramModel` (local spelling patterns only).
-    - `MLPCharModel` (fixed window, position‑specific but no recurrence).
+    - `MLPCharModel` (fixed window, position‑specific but no recurrence; depth
+      via `num_hidden_layers` / `MLP_NUM_HIDDEN_LAYERS`, ReLU+dropout between
+      hidden blocks; CLI `--mlp-hidden-layers`).
   - Sequence / local pattern models (plug into the same training loop via `models.get_model`):
     - `RNNCharModel` — LSTM over embeddings; last hidden state → logits.
     - `CNNCharModel` — Conv1d over embeddings with multiple kernel sizes +
@@ -157,7 +160,8 @@ High‑level flow, extending the current baseline:
 - `src/train.py` constructs the model via `get_model` using configuration from
   `src/config.py` and trains it using the same training loop (cross‑entropy
   loss, Adam optimizer, validation, early stopping).
-- CLI: `python -m src.train --model mlp` (or `rnn`, `cnn`, `ngram`).
+- CLI: `python -m src.train --model mlp` (optional `--mlp-hidden-layers N`),
+  or `rnn`, `cnn`, `ngram`.
 
 ---
 
@@ -230,8 +234,8 @@ structure** in English:
   - `run_id` (timestamp + model name).
   - `timestamp`.
   - `model` (ngram/mlp/rnn/cnn).
-  - `config` (context length, embedding size, hidden size, dropout, epochs,
-    etc.).
+  - `config` (context length, embedding size, hidden size, dropout, MLP hidden
+    layer count when applicable, epochs, etc.).
   - `data` (number of characters used, vocab size, which files from
     `data/raw/`).
   - `metrics` (best validation loss/accuracy, test loss/accuracy).

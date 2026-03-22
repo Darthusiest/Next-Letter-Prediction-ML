@@ -30,8 +30,25 @@ def test_mlp_forward():
         embed_dim=4,
         hidden_dim=16,
         dropout=0.0,
+        num_hidden_layers=1,
     )
     x = torch.randint(0, 10, (2, 8))
     out = model(x)
     assert out.shape == (2, 10)
     assert torch.isfinite(out).all()
+
+
+def test_mlp_multilayer_forward():
+    model = MLPCharModel(
+        vocab_size=10,
+        context_length=8,
+        embed_dim=4,
+        hidden_dim=16,
+        dropout=0.0,
+        num_hidden_layers=3,
+    )
+    x = torch.randint(0, 10, (2, 8))
+    out = model(x)
+    assert out.shape == (2, 10)
+    assert torch.isfinite(out).all()
+    assert len(model.extra) == 2

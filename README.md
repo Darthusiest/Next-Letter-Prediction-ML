@@ -115,9 +115,12 @@ python -m src.train --model ngram
 | `--eval-every` | Run validation every N training steps (default: `EVAL_EVERY_N_STEPS` in `src/config.py`). |
 | `--compile` | Enable `torch.compile` on the model (sometimes helps RNN/CNN on GPU/MPS). |
 | `--rnn-layers` | LSTM layer count for `--model rnn` (default: `RNN_NUM_LAYERS` in `src/config.py`, currently 1). |
-| `--weight-decay` | Adam L2 penalty (default: `WEIGHT_DECAY` in config; `0.0` preserves old behavior). |
-| `--label-smoothing` | Neural cross-entropy label smoothing (default: `LABEL_SMOOTHING`, usually `0.0`). |
-| `--plateau-lr` | Enable `ReduceLROnPlateau` on epoch-end val loss (neural only; off by default). |
+| `--weight-decay` | AdamW weight decay (default: `WEIGHT_DECAY`, typically `1e-2`; `0.0` disables). |
+| `--label-smoothing` | Neural cross-entropy label smoothing (default: `LABEL_SMOOTHING`, typically `0.1`; `0.0` disables). |
+| `--plateau-lr` / `--no-plateau-lr` | `ReduceLROnPlateau` on epoch-end val loss, layered on cosine annealing (default follows `USE_PLATEAU_LR`). |
+| `--grad-clip` | Max gradient L2 norm (default: `GRAD_CLIP_NORM` in config, typically `1.0`; `0` disables). |
+| `--warmup-steps` | Linear LR warmup from near-zero to `LEARNING_RATE` (default: `WARMUP_STEPS`, typically `1000`; `0` disables). |
+| `--mlp-hidden-layers` | MLP depth: number of hidden Linear blocks (`fc1` + `extra.*`), MLP only (default: `MLP_NUM_HIDDEN_LAYERS` in config). |
 
 Other overrides live on `train()` in `src/train.py`, e.g. `num_workers`, `epochs`, `batch_size`.
 
@@ -126,11 +129,11 @@ Other overrides live on `train()` in `src/train.py`, e.g. `num_workers`, `epochs
 Use the same `--max-chars`, `--data-source`, and seed (set `SEED` in config) when comparing runs. Examples:
 
 ```bash
-# Baseline (defaults)
+# Baseline (defaults: weight decay, label smoothing, plateau LR from config)
 python -m src.train --model mlp --data-source cleaned --max-chars 500000
 
-# Stronger L2
-python -m src.train --model mlp --data-source cleaned --max-chars 500000 --weight-decay 1e-4
+# Stronger L2 (e.g. ablation vs default 1e-4)
+python -m src.train --model mlp --data-source cleaned --max-chars 500000 --weight-decay 1e-3
 
 # Higher dropout: set DROPOUT = 0.4 in src/config.py (or add a CLI later)
 ```
@@ -270,19 +273,21 @@ Each run creates plots/reports under `outputs/runs/<run_id>/`:
 
 ## Default hyperparameters (first run)
 
-Tuned for full character set (letters, digits, punctuation, case) and ~20% val/test accuracy:
-
 | Parameter   | Value |
 |------------|--------|
 | Context length | 64 |
-| Batch size    | 64 |
-| Embed dim     | 64 |
-| Hidden dim    | 256 |
-| Dropout       | 0.25 |
-| Learning rate | 1e-3 |
-| Epochs        | 30 (early stopping) |
-| Early stop patience | 3 epochs without **epoch-end** val improvement |
-| Optimizer     | Adam (foreach multi-tensor path when supported; optional `WEIGHT_DECAY`) |
+| Batch size    | 128 |
+| Embed dim     | 128 |
+| Hidden dim    | 512 |
+| MLP hidden layers | 3 (`fc1` + 2 residual `extra` blocks, each H→H with GELU+LayerNorm+dropout) |
+| Activation    | GELU (MLP, CNN); LSTM gates (RNN) |
+| Normalization | LayerNorm after each hidden block (MLP, RNN, CNN) |
+| Dropout       | 0.3 |
+| Learning rate | 3e-4 (linear warmup 1000 steps → cosine annealing to 1% of peak) |
+| Epochs        | 50 (early stopping) |
+| Early stop patience | 5 epochs without **epoch-end** val improvement |
+| Optimizer     | AdamW (`WEIGHT_DECAY` 1e-2, `LABEL_SMOOTHING` 0.1, `GRAD_CLIP_NORM` 1.0) |
+| LR schedule   | Warmup → cosine decay + `ReduceLROnPlateau` on epoch-end val loss |
 | DataLoader workers | Up to 4 (`NUM_WORKERS` in `src/config.py`) |
 
 ## Next steps (roadmap)

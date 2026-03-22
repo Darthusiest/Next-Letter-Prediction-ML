@@ -35,6 +35,7 @@ class RNNCharModel(nn.Module):
             batch_first=True,
             dropout=dropout if num_layers > 1 else 0.0,
         )
+        self.ln = nn.LayerNorm(hidden_dim)
         self.dropout = nn.Dropout(dropout)
         self.fc = nn.Linear(hidden_dim, vocab_size)
 
@@ -50,6 +51,7 @@ class RNNCharModel(nn.Module):
         # allocating (B, L, H), which cuts memory traffic on long contexts.
         _, (h_n, _) = self.lstm(x)
         last_hidden = h_n[-1]  # (B, H)
+        last_hidden = self.ln(last_hidden)
         last_hidden = self.dropout(last_hidden)
         logits = self.fc(last_hidden)  # (B, V)
         return logits

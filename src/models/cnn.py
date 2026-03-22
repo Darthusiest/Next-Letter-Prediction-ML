@@ -5,13 +5,14 @@ Uses 1D convolutions over embeddings to capture local spelling patterns.
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class CNNCharModel(nn.Module):
     """
     Conv1d over character embeddings with multiple kernel sizes.
-    Global max-pooling aggregates over the context, then a linear layer
-    projects to vocabulary logits.
+    Global max-pooling aggregates over the context, then LayerNorm +
+    dropout + linear projection to vocabulary logits.
     """
 
     def __init__(
@@ -40,23 +41,21 @@ class CNNCharModel(nn.Module):
                 )
             )
         self.convs = nn.ModuleList(convs)
+        total_channels = num_channels * len(kernel_sizes)
+        self.ln = nn.LayerNorm(total_channels)
         self.dropout = nn.Dropout(dropout)
-        self.fc = nn.Linear(num_channels * len(kernel_sizes), vocab_size)
+        self.fc = nn.Linear(total_channels, vocab_size)
 
     def forward(self, context: torch.Tensor) -> torch.Tensor:
-        """
-        context: (batch, context_length) long tensor of character ids.
-        Returns: (batch, vocab_size) logits.
-        """
         x = self.embed(context)          # (B, L, E)
         x = x.transpose(1, 2)            # (B, E, L)
         feats = []
         for conv in self.convs:
-            h = torch.relu(conv(x))      # (B, C, L)
+            h = F.gelu(conv(x))          # (B, C, L)
             h, _ = torch.max(h, dim=2)   # global max-pool → (B, C)
             feats.append(h)
         h_cat = torch.cat(feats, dim=1)  # (B, C * K)
+        h_cat = self.ln(h_cat)
         h_cat = self.dropout(h_cat)
-        logits = self.fc(h_cat)          # (B, V)
-        return logits
+        return self.fc(h_cat)            # (B, V)
 

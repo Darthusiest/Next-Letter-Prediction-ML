@@ -15,9 +15,9 @@ CLEAN_TEXT_DIR = PROCESSED_DATA_DIR / "clean_texts"
 
 # Data
 CONTEXT_LENGTH = 64
-TRAIN_RATIO = 0.8
-VAL_RATIO = 0.1
-TEST_RATIO = 0.1
+TRAIN_RATIO = 0.6
+VAL_RATIO = 0.2
+TEST_RATIO = 0.2
 MAX_CHARS = None  # None = use all; set to e.g. 500_000 for fast iteration
 
 # Vocabulary: any character the model can predict (letters upper/lower, digits, punctuation)
@@ -30,35 +30,40 @@ DEFAULT_ALLOWED_CHARS = set(
 )
 
 # Dataloader
-BATCH_SIZE = 64
+BATCH_SIZE = 128
 # >0 overlaps batch prep with GPU/MPS work; use 0 only if debugging worker issues.
 NUM_WORKERS = min(4, os.cpu_count() or 1)
 
-# MLP defaults (slightly larger to reach ~20% val/test with full vocab)
-EMBED_DIM = 64
-HIDDEN_DIM = 256
-DROPOUT = 0.25
+# Model architecture
+EMBED_DIM = 128
+HIDDEN_DIM = 512
+DROPOUT = 0.3
+# MLP: first block is flat→HIDDEN_DIM; extras are HIDDEN_DIM→HIDDEN_DIM with residual+GELU+LN.
+MLP_NUM_HIDDEN_LAYERS = 3
 
 # RNN: extra LSTM layers multiply sequential work; 1 layer is the default for speed.
 RNN_NUM_LAYERS = 1
 
-# Training (enough to reach ~20% val/test accuracy with full char set)
-LEARNING_RATE = 1e-3
-EPOCHS = 30
-# Validation can be expensive on CPU; evaluate less frequently by default.
+# Training
+LEARNING_RATE = 3e-4
+EPOCHS = 50
 EVAL_EVERY_N_STEPS = 5000
 # Early stopping uses **end-of-epoch** validation only (not eval_every mid-epoch).
-EARLY_STOPPING_PATIENCE = 3  # epochs without val improvement at epoch boundary
+EARLY_STOPPING_PATIENCE = 5
 CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"
 
-# Neural training: Adam L2; 0.0 keeps prior behavior. Try 1e-4–1e-2 for regularization ablations.
-WEIGHT_DECAY = 0.0
+# AdamW weight decay (decoupled from gradient, unlike Adam L2).
+WEIGHT_DECAY = 1e-2
 # Soft targets for cross-entropy (neural models only); 0 disables.
-LABEL_SMOOTHING = 0.0
-# If True, ReduceLROnPlateau steps on epoch-end validation loss (neural only).
-USE_PLATEAU_LR = False
+LABEL_SMOOTHING = 0.1
+# ReduceLROnPlateau on epoch-end validation loss (on top of cosine annealing).
+USE_PLATEAU_LR = True
 LR_PLATEAU_FACTOR = 0.5
-LR_PLATEAU_PATIENCE = 1  # scheduler patience (epochs); independent of early stopping
+LR_PLATEAU_PATIENCE = 2
+# Max gradient L2 norm; prevents spikes during training. 0 disables clipping.
+GRAD_CLIP_NORM = 1.0
+# Linear warmup: ramp LR from near-zero to LEARNING_RATE over this many steps. 0 disables.
+WARMUP_STEPS = 1000
 
 # N-gram baseline
 NGRAM_ORDER = 4

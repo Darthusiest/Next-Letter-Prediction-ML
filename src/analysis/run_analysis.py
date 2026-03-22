@@ -49,6 +49,10 @@ def _infer_model_kwargs_from_state(model_name: str, state: dict) -> dict:
             out["embed_dim"] = int(state["embed.weight"].shape[1])
         if "fc1.weight" in state:
             out["hidden_dim"] = int(state["fc1.weight"].shape[0])
+        extra = 0
+        while f"extra.{extra}.weight" in state:
+            extra += 1
+        out["num_hidden_layers"] = 1 + extra
         return out
 
     if model_name == "rnn":
