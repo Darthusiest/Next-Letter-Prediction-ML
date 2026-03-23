@@ -39,7 +39,7 @@ EMBED_DIM = 128
 HIDDEN_DIM = 512
 DROPOUT = 0.3
 # MLP: first block is flat→HIDDEN_DIM; extras are HIDDEN_DIM→HIDDEN_DIM with residual+GELU+LN.
-MLP_NUM_HIDDEN_LAYERS = 3
+MLP_NUM_HIDDEN_LAYERS = 5
 
 # RNN: extra LSTM layers multiply sequential work; 1 layer is the default for speed.
 RNN_NUM_LAYERS = 1
@@ -64,6 +64,10 @@ LR_PLATEAU_PATIENCE = 2
 GRAD_CLIP_NORM = 1.0
 # Linear warmup: ramp LR from near-zero to LEARNING_RATE over this many steps. 0 disables.
 WARMUP_STEPS = 1000
+
+# Tokenization: "char" for character-level, "bpe" for byte-pair encoding subwords.
+TOKENIZER_TYPE = "char"
+BPE_VOCAB_SIZE = 2000
 
 # N-gram baseline
 NGRAM_ORDER = 4

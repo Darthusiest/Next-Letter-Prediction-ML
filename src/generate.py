@@ -28,11 +28,16 @@ def generate(
     model.eval()
     if len(seed) == 0:
         seed = " "  # avoid empty context
-    # Ensure we only use chars in vocab
-    seed = "".join(c for c in seed if c in vocab.char2id)[-context_length:]
-    if len(seed) < context_length:
-        seed = " " * (context_length - len(seed)) + seed
+    # For char vocab, filter to known chars; BPE handles arbitrary input
+    if hasattr(vocab, "char2id") and isinstance(vocab.char2id, dict):
+        seed = "".join(c for c in seed if c in vocab.char2id)
     ids = vocab.encode(seed)
+    # Pad or truncate token sequence to context_length
+    if len(ids) > context_length:
+        ids = ids[-context_length:]
+    elif len(ids) < context_length:
+        pad_id = vocab.encode(" ")[0] if vocab.encode(" ") else 0
+        ids = [pad_id] * (context_length - len(ids)) + ids
     generated = list(ids)
     is_ngram = hasattr(model, "_counts")
 

@@ -29,6 +29,7 @@ class CNNCharModel(nn.Module):
         self.context_length = context_length
 
         self.embed = nn.Embedding(vocab_size, embed_dim)
+        self.embed_drop = nn.Dropout(dropout)
 
         convs = []
         for k in kernel_sizes:
@@ -47,7 +48,7 @@ class CNNCharModel(nn.Module):
         self.fc = nn.Linear(total_channels, vocab_size)
 
     def forward(self, context: torch.Tensor) -> torch.Tensor:
-        x = self.embed(context)          # (B, L, E)
+        x = self.embed_drop(self.embed(context))  # (B, L, E)
         x = x.transpose(1, 2)            # (B, E, L)
         feats = []
         for conv in self.convs:

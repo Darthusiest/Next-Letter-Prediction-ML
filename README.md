@@ -120,22 +120,31 @@ python -m src.train --model ngram
 | `--plateau-lr` / `--no-plateau-lr` | `ReduceLROnPlateau` on epoch-end val loss, layered on cosine annealing (default follows `USE_PLATEAU_LR`). |
 | `--grad-clip` | Max gradient L2 norm (default: `GRAD_CLIP_NORM` in config, typically `1.0`; `0` disables). |
 | `--warmup-steps` | Linear LR warmup from near-zero to `LEARNING_RATE` (default: `WARMUP_STEPS`, typically `1000`; `0` disables). |
-| `--mlp-hidden-layers` | MLP depth: number of hidden Linear blocks (`fc1` + `extra.*`), MLP only (default: `MLP_NUM_HIDDEN_LAYERS` in config). |
+| `--mlp-hidden-layers` | MLP depth: number of hidden Linear blocks (`proj` + `extra.*`), MLP only (default: `MLP_NUM_HIDDEN_LAYERS` in config). |
+| `--dropout` | Dropout rate for all layers including embedding (default: `DROPOUT` in config). |
+| `--embed-dim` | Embedding dimension (default: `EMBED_DIM` in config). |
+| `--hidden-dim` | Hidden layer dimension (default: `HIDDEN_DIM` in config). |
+| `--tokenizer` | `char` (default) or `bpe` for byte-pair subword tokenization. |
+| `--bpe-vocab-size` | BPE vocabulary size (default: `BPE_VOCAB_SIZE` in config, 2000). |
 
 Other overrides live on `train()` in `src/train.py`, e.g. `num_workers`, `epochs`, `batch_size`.
 
-#### Regularization ablations (fair comparison)
+#### Regularization and architecture ablations
 
 Use the same `--max-chars`, `--data-source`, and seed (set `SEED` in config) when comparing runs. Examples:
 
 ```bash
-# Baseline (defaults: weight decay, label smoothing, plateau LR from config)
-python -m src.train --model mlp --data-source cleaned --max-chars 500000
+# Baseline (defaults from config)
+python -m src.train --model mlp --data-source cleaned
 
-# Stronger L2 (e.g. ablation vs default 1e-4)
-python -m src.train --model mlp --data-source cleaned --max-chars 500000 --weight-decay 1e-3
+# Higher dropout + smaller capacity
+python -m src.train --model mlp --data-source cleaned --dropout 0.4 --hidden-dim 256
 
-# Higher dropout: set DROPOUT = 0.4 in src/config.py (or add a CLI later)
+# Deeper network
+python -m src.train --model mlp --data-source cleaned --mlp-hidden-layers 7
+
+# BPE subword tokenization
+python -m src.train --model mlp --data-source cleaned --tokenizer bpe --bpe-vocab-size 2000
 ```
 
 Report **`val_loss_best`** from `metrics.json` and **`test_loss` / `test_accuracy`** (these are **test@best**).
@@ -240,9 +249,10 @@ print(out)
 - `src/vocab.py` — character vocabulary (build, encode, decode, save/load)
 - `src/dataset.py` — sliding-window dataset and train/val/test split
 - `src/models/baseline_ngram.py` — n-gram baseline
-- `src/models/mlp.py` — MLP over fixed context
+- `src/models/mlp.py` — MLP with positional embeddings + attention pooling
 - `src/models/rnn.py` — LSTM over context
 - `src/models/cnn.py` — Conv1d over character embeddings
+- `src/tokenizer.py` — BPE subword tokenizer (HuggingFace `tokenizers`)
 - `src/train.py` — training loop and CLI (`python -m src.train`)
 - `src/evaluate.py` — perplexity and accuracy
 - `src/generate.py` — autoregressive sampling with temperature
@@ -271,7 +281,7 @@ Each run creates plots/reports under `outputs/runs/<run_id>/`:
   - `residual_noise_diagnostics.txt` (if entropy analysis is enabled)
   - `similarity_report.txt` (if enabled)
 
-## Default hyperparameters (first run)
+## Default hyperparameters
 
 | Parameter   | Value |
 |------------|--------|
@@ -279,24 +289,27 @@ Each run creates plots/reports under `outputs/runs/<run_id>/`:
 | Batch size    | 128 |
 | Embed dim     | 128 |
 | Hidden dim    | 512 |
-| MLP hidden layers | 3 (`fc1` + 2 residual `extra` blocks, each H→H with GELU+LayerNorm+dropout) |
+| MLP hidden layers | 5 (`proj` + 4 residual `extra` blocks, each H→H with GELU+LayerNorm+dropout) |
+| MLP architecture | Positional embeddings + attention pooling over context positions (replaces flatten) |
 | Activation    | GELU (MLP, CNN); LSTM gates (RNN) |
 | Normalization | LayerNorm after each hidden block (MLP, RNN, CNN) |
-| Dropout       | 0.3 |
+| Dropout       | 0.3 (embedding + hidden layers; all models have embedding dropout) |
 | Learning rate | 3e-4 (linear warmup 1000 steps → cosine annealing to 1% of peak) |
 | Epochs        | 50 (early stopping) |
 | Early stop patience | 5 epochs without **epoch-end** val improvement |
 | Optimizer     | AdamW (`WEIGHT_DECAY` 1e-2, `LABEL_SMOOTHING` 0.1, `GRAD_CLIP_NORM` 1.0) |
 | LR schedule   | Warmup → cosine decay + `ReduceLROnPlateau` on epoch-end val loss |
+| Tokenization  | Character-level (default) or BPE subword (`--tokenizer bpe`) |
 | DataLoader workers | Up to 4 (`NUM_WORKERS` in `src/config.py`) |
 
 ## Next steps (roadmap)
 
 1. N-gram baseline — done
-2. MLP baseline — done
+2. MLP baseline — done (evolved: positional embeddings + attention pooling)
 3. LSTM/GRU — done (`rnn`)
 4. CNN over characters — done (`cnn`)
-5. Analysis: vowel/consonant accuracy, confusion, context length, temperature
+5. BPE subword tokenization — done (`--tokenizer bpe`)
+6. Analysis: vowel/consonant accuracy, confusion, context length, temperature
 
 Train a model from the repo root (use the project venv):
 

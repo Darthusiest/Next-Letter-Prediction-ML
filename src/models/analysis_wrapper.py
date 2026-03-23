@@ -47,8 +47,7 @@ class ModelAnalysisWrapper:
         if len(ids) >= self.context_length:
             ids = ids[-self.context_length :]
         else:
-            # left-pad with the id of space if available, else first char id
-            pad_id = self.vocab.char2id.get(" ", next(iter(self.vocab.char2id.values())))
+            pad_id = self.vocab.encode(" ")[0] if self.vocab.encode(" ") else 0
             pad_len = self.context_length - len(ids)
             ids = [pad_id] * pad_len + ids
         x = torch.tensor(ids, dtype=torch.long, device=self.device).unsqueeze(0)
@@ -106,7 +105,14 @@ class ModelAnalysisWrapper:
                     feats.append(h)
                 h_cat = torch.cat(feats, dim=1)[0]
                 return h_cat.cpu().numpy()
-            # Fallback: last hidden before final linear if attribute 'fc1' exists
+            # MLP with attention pooling (new architecture)
+            if hasattr(self.model, "attn_score") and hasattr(self.model, "proj"):
+                emb = self.model.embed(x) + self.model.pos_embed
+                attn_w = F.softmax(self.model.attn_score(emb).squeeze(-1), dim=1)
+                pooled = (emb * attn_w.unsqueeze(-1)).sum(dim=1)
+                h = F.gelu(self.model.proj(pooled))[0]
+                return h.cpu().numpy()
+            # Legacy MLP with flatten + fc1
             if hasattr(self.model, "embed") and hasattr(self.model, "fc1"):
                 emb = self.model.embed(x)
                 flat = emb.view(emb.size(0), -1)

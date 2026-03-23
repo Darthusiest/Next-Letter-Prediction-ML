@@ -48,9 +48,12 @@ from src.config import (
     LR_PLATEAU_PATIENCE,
     GRAD_CLIP_NORM,
     WARMUP_STEPS,
+    TOKENIZER_TYPE,
+    BPE_VOCAB_SIZE,
 )
 from src.preprocess import load_text, clean_text
 from src.vocab import build_vocab_from_text, CharVocab
+from src.tokenizer import BPETokenizer
 from src.dataset import get_splits, get_dataloaders
 from src.models import get_model
 from src.models.baseline_ngram import NGramModel
@@ -82,6 +85,18 @@ def _amp_device_for_training(device: torch.device) -> str | None:
     return None
 
 
+def _load_vocab_from_checkpoint(ckpt: dict):
+    """Load the vocab/tokenizer from a checkpoint dict."""
+    tok_type = ckpt.get("tokenizer_type", "char")
+    if tok_type == "bpe":
+        tok_path = ckpt.get("tokenizer_path")
+        if tok_path:
+            return BPETokenizer.load(tok_path)
+        raise FileNotFoundError("BPE checkpoint missing tokenizer_path")
+    vocab_obj = ckpt["vocab"]
+    return vocab_obj if isinstance(vocab_obj, CharVocab) else CharVocab(vocab_obj)
+
+
 def _evaluate_from_neural_checkpoint(
     ckpt: dict,
     test_loader,
@@ -91,8 +106,7 @@ def _evaluate_from_neural_checkpoint(
     from src.models import get_model
 
     model_name = ckpt.get("model_name", "mlp")
-    vocab_obj = ckpt["vocab"]
-    vocab = vocab_obj if isinstance(vocab_obj, CharVocab) else CharVocab(vocab_obj)
+    vocab = _load_vocab_from_checkpoint(ckpt)
     context_length = ckpt.get("context_length", CONTEXT_LENGTH)
     state = ckpt.get("model_state") or {}
     model_kwargs = ckpt.get("model_kwargs") or _infer_model_kwargs_from_state(
@@ -131,12 +145,23 @@ def train(
     use_plateau_lr: bool | None = None,
     grad_clip_norm: float | None = None,
     warmup_steps: int | None = None,
+    mlp_num_hidden_layers: int | None = None,
+    dropout: float | None = None,
+    embed_dim: int | None = None,
+    hidden_dim: int | None = None,
+    tokenizer_type: str | None = None,
+    bpe_vocab_size: int | None = None,
 ):
     wd = WEIGHT_DECAY if weight_decay is None else weight_decay
     ls = LABEL_SMOOTHING if label_smoothing is None else label_smoothing
     plateau = USE_PLATEAU_LR if use_plateau_lr is None else use_plateau_lr
     clip = GRAD_CLIP_NORM if grad_clip_norm is None else grad_clip_norm
     warmup = WARMUP_STEPS if warmup_steps is None else warmup_steps
+    tok_type = TOKENIZER_TYPE if tokenizer_type is None else tokenizer_type
+    bpe_vs = BPE_VOCAB_SIZE if bpe_vocab_size is None else bpe_vocab_size
+    drop = DROPOUT if dropout is None else dropout
+    edim = EMBED_DIM if embed_dim is None else embed_dim
+    hdim = HIDDEN_DIM if hidden_dim is None else hidden_dim
 
     set_seed(seed)
     device = get_device()
@@ -193,7 +218,12 @@ def train(
     # Save cleaned corpus snapshot for analysis
     (run_dir / "train_corpus.txt").write_text(text, encoding="utf-8")
 
-    vocab = build_vocab_from_text(text, allowed_chars=DEFAULT_ALLOWED_CHARS)
+    if tok_type == "bpe":
+        vocab = BPETokenizer.train(text, vocab_size=bpe_vs)
+        vocab.save(run_dir / "tokenizer.json")
+        logger.info("Trained BPE tokenizer: %d subword tokens", vocab.vocab_size)
+    else:
+        vocab = build_vocab_from_text(text, allowed_chars=DEFAULT_ALLOWED_CHARS)
     logger.info("Vocabulary size: %d", vocab.vocab_size)
 
     train_ds, val_ds, test_ds = get_splits(
@@ -241,9 +271,9 @@ def train(
             model_name,
             vocab_size=vocab.vocab_size,
             context_length=context_length,
-            embed_dim=EMBED_DIM,
-            hidden_dim=HIDDEN_DIM,
-            dropout=DROPOUT,
+            embed_dim=edim,
+            hidden_dim=hdim,
+            dropout=drop,
             **rnn_kw,
             **mlp_kw,
         )
@@ -256,21 +286,28 @@ def train(
                 logger.warning("torch.compile skipped: %s", e)
 
         neural_model_kwargs: dict = {
-            "embed_dim": EMBED_DIM,
-            "hidden_dim": HIDDEN_DIM,
-            "dropout": DROPOUT,
+            "embed_dim": edim,
+            "hidden_dim": hdim,
+            "dropout": drop,
         }
         if model_name == "rnn":
             neural_model_kwargs["num_layers"] = model.lstm.num_layers
+        if model_name == "mlp":
+            neural_model_kwargs["num_hidden_layers"] = model.num_hidden_layers
 
         def _best_pt_payload() -> dict:
-            return {
+            payload = {
                 "model_state": model.state_dict(),
-                "vocab": vocab,
                 "context_length": context_length,
                 "model_name": model_name,
                 "model_kwargs": dict(neural_model_kwargs),
+                "tokenizer_type": tok_type,
             }
+            if tok_type == "bpe":
+                payload["tokenizer_path"] = str(run_dir / "tokenizer.json")
+            else:
+                payload["vocab"] = vocab
+            return payload
 
         try:
             optimizer = torch.optim.AdamW(
@@ -449,16 +486,18 @@ def train(
     save_json(loss_history, run_dir / "loss_history.json")
 
     # Last-epoch checkpoint (for debugging / calibration compare vs best.pt)
-    _save_checkpoint(
-        run_dir / "checkpoint.pt",
-        {
-            "model_name": model_name,
-            "model_state": model.state_dict(),
-            "vocab": vocab,
-            "context_length": context_length,
-            "model_kwargs": dict(neural_model_kwargs),
-        },
-    )
+    ckpt_payload = {
+        "model_name": model_name,
+        "model_state": model.state_dict(),
+        "context_length": context_length,
+        "model_kwargs": dict(neural_model_kwargs),
+        "tokenizer_type": tok_type,
+    }
+    if tok_type == "bpe":
+        ckpt_payload["tokenizer_path"] = str(run_dir / "tokenizer.json")
+    else:
+        ckpt_payload["vocab"] = vocab
+    _save_checkpoint(run_dir / "checkpoint.pt", ckpt_payload)
 
     # Save metrics summary (primary test_* = best validation weights)
     metrics = {
@@ -487,9 +526,9 @@ def train(
         "config": {
             "context_length": context_length,
             "batch_size": batch_size,
-            "embed_dim": EMBED_DIM,
-            "hidden_dim": HIDDEN_DIM,
-            "dropout": DROPOUT,
+            "embed_dim": edim,
+            "hidden_dim": hdim,
+            "dropout": drop,
             "learning_rate": lr,
             "epochs": epochs,
             "weight_decay": wd,
@@ -497,6 +536,8 @@ def train(
             "use_plateau_lr": plateau,
             "grad_clip_norm": clip,
             "warmup_steps": warmup,
+            "tokenizer": tok_type,
+            **({"bpe_vocab_size": bpe_vs} if tok_type == "bpe" else {}),
             **(
                 {"mlp_num_hidden_layers": model.num_hidden_layers}
                 if model_name == "mlp"
@@ -619,6 +660,37 @@ def main():
         metavar="N",
         help="MLP hidden Linear depth for --model mlp (default: MLP_NUM_HIDDEN_LAYERS in config).",
     )
+    parser.add_argument(
+        "--dropout",
+        type=float,
+        default=None,
+        help="Dropout rate for all layers including embedding (default: DROPOUT in config).",
+    )
+    parser.add_argument(
+        "--embed-dim",
+        type=int,
+        default=None,
+        help="Embedding dimension (default: EMBED_DIM in config).",
+    )
+    parser.add_argument(
+        "--hidden-dim",
+        type=int,
+        default=None,
+        help="Hidden layer dimension (default: HIDDEN_DIM in config).",
+    )
+    parser.add_argument(
+        "--tokenizer",
+        default=None,
+        choices=["char", "bpe"],
+        help='Tokenization: "char" for character-level, "bpe" for byte-pair subwords (default: TOKENIZER_TYPE in config).',
+    )
+    parser.add_argument(
+        "--bpe-vocab-size",
+        type=int,
+        default=None,
+        metavar="N",
+        help="BPE vocabulary size (default: BPE_VOCAB_SIZE in config).",
+    )
     args = parser.parse_args()
     setup_logging()
     kw = {}
@@ -642,6 +714,16 @@ def main():
         kw["warmup_steps"] = args.warmup_steps
     if args.mlp_hidden_layers is not None:
         kw["mlp_num_hidden_layers"] = args.mlp_hidden_layers
+    if args.dropout is not None:
+        kw["dropout"] = args.dropout
+    if args.embed_dim is not None:
+        kw["embed_dim"] = args.embed_dim
+    if args.hidden_dim is not None:
+        kw["hidden_dim"] = args.hidden_dim
+    if args.tokenizer is not None:
+        kw["tokenizer_type"] = args.tokenizer
+    if args.bpe_vocab_size is not None:
+        kw["bpe_vocab_size"] = args.bpe_vocab_size
     train(
         model_name=args.model,
         data_source=args.data_source,

@@ -47,7 +47,10 @@ def _infer_model_kwargs_from_state(model_name: str, state: dict) -> dict:
         out = {}
         if "embed.weight" in state:
             out["embed_dim"] = int(state["embed.weight"].shape[1])
-        if "fc1.weight" in state:
+        # New architecture uses proj, legacy uses fc1
+        if "proj.weight" in state:
+            out["hidden_dim"] = int(state["proj.weight"].shape[0])
+        elif "fc1.weight" in state:
             out["hidden_dim"] = int(state["fc1.weight"].shape[0])
         extra = 0
         while f"extra.{extra}.weight" in state:
@@ -142,11 +145,22 @@ def run_post_training_analysis(config: AnalysisConfig) -> None:
         model_wrapper = None
     else:
         model_name = ckpt.get("model_name", "mlp")
-        vocab_obj = ckpt.get("vocab")
-        if not isinstance(vocab_obj, CharVocab):
-            vocab = CharVocab(vocab_obj)
+        tok_type = ckpt.get("tokenizer_type", "char")
+        if tok_type == "bpe":
+            from ..tokenizer import BPETokenizer
+            tok_path = ckpt.get("tokenizer_path")
+            if tok_path:
+                vocab = BPETokenizer.load(tok_path)
+            else:
+                skipped.append("BPE checkpoint missing tokenizer_path; skipping.")
+                model_wrapper = None
+                vocab = None
         else:
-            vocab = vocab_obj
+            vocab_obj = ckpt.get("vocab")
+            if not isinstance(vocab_obj, CharVocab):
+                vocab = CharVocab(vocab_obj)
+            else:
+                vocab = vocab_obj
         context_length = ckpt.get("context_length", CONTEXT_LENGTH)
         state = ckpt.get("model_state") or {}
         model_kwargs = ckpt.get("model_kwargs") or _infer_model_kwargs_from_state(

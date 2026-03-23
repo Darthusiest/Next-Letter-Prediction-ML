@@ -15,7 +15,9 @@ As of the current tree:
   **no** transformer module in the repository.
 - **Training entrypoint:** `python -m src.train` with argparse (`--model`,
   `--data-source`, `--max-chars`, `--eval-every`, `--compile`, `--rnn-layers`,
-  `--weight-decay`, `--label-smoothing`, `--plateau-lr`); programmatic `train()`
+  `--weight-decay`, `--label-smoothing`, `--plateau-lr`, `--grad-clip`,
+  `--warmup-steps`, `--mlp-hidden-layers`, `--dropout`, `--embed-dim`,
+  `--hidden-dim`, `--tokenizer`, `--bpe-vocab-size`); programmatic `train()`
   in `src/train.py` supports further knobs (e.g. `num_workers`, `compile_model`).
 - **Device selection:** CUDA if available, else Apple **MPS**, else CPU
   (`src/utils/__init__.py`). Mixed precision: CUDA uses `GradScaler` + autocast;
@@ -39,9 +41,15 @@ As of the current tree:
   end-of-epoch** validation only (`EARLY_STOPPING_PATIENCE` in `config.py`;
   default 3). Mid-epoch `eval_every` can still refresh `best.pt` but does not
   advance patience (see README / `docs/design.md`).
-- **Regularization (neural):** config `WEIGHT_DECAY` (default `1e-4`),
-  `LABEL_SMOOTHING` (default `0.05`), and `USE_PLATEAU_LR` + `ReduceLROnPlateau`
-  on epoch-end val loss (on by default; CLI `--no-plateau-lr` to disable).
+- **Regularization (neural):** config `WEIGHT_DECAY` (default `1e-2`),
+  `LABEL_SMOOTHING` (default `0.1`), `GRAD_CLIP_NORM` (default `1.0`),
+  `DROPOUT` (default `0.3`, applied to embeddings and hidden layers),
+  and `USE_PLATEAU_LR` + `ReduceLROnPlateau` on epoch-end val loss
+  (on by default; CLI `--no-plateau-lr` to disable).
+- **Tokenization:** Character-level (default) or BPE subword via
+  `--tokenizer bpe --bpe-vocab-size N`. Config `TOKENIZER_TYPE` and
+  `BPE_VOCAB_SIZE` (default 2000). BPE tokenizer trained on corpus via
+  HuggingFace `tokenizers` library (`src/tokenizer.py`).
 - **Logging:** `logs/runs/<run_id>.json` via `log_run()`.
 - **Analysis:** `src/analysis/run_analysis.py` (`run_post_training_analysis`);
   optional attention plots only apply if a model exposes attention (no
@@ -86,9 +94,10 @@ High‑level flow, extending the current baseline:
 - **Models**
   - Baselines:
     - `NGramModel` (local spelling patterns only).
-    - `MLPCharModel` (fixed window, position‑specific but no recurrence; depth
-      via `num_hidden_layers` / `MLP_NUM_HIDDEN_LAYERS`, ReLU+dropout between
-      hidden blocks; CLI `--mlp-hidden-layers`).
+    - `MLPCharModel` (positional embeddings + attention pooling over context,
+      then residual hidden blocks with GELU+LayerNorm+dropout; depth via
+      `num_hidden_layers` / `MLP_NUM_HIDDEN_LAYERS`, default 5;
+      CLI `--mlp-hidden-layers`, `--dropout`, `--embed-dim`, `--hidden-dim`).
   - Sequence / local pattern models (plug into the same training loop via `models.get_model`):
     - `RNNCharModel` — LSTM over embeddings; last hidden state → logits.
     - `CNNCharModel` — Conv1d over embeddings with multiple kernel sizes +

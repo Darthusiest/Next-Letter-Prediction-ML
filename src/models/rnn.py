@@ -28,6 +28,7 @@ class RNNCharModel(nn.Module):
         self.context_length = context_length
 
         self.embed = nn.Embedding(vocab_size, embed_dim)
+        self.embed_drop = nn.Dropout(dropout)
         self.lstm = nn.LSTM(
             input_size=embed_dim,
             hidden_size=hidden_dim,
@@ -45,7 +46,7 @@ class RNNCharModel(nn.Module):
         Returns: (batch, vocab_size) logits.
         """
         # (B, L) -> (B, L, E)
-        x = self.embed(context)
+        x = self.embed_drop(self.embed(context))
         # LSTM must walk all L timesteps (inherent cost vs parallel MLP/CNN).
         # Use final-layer final hidden state instead of full output to avoid
         # allocating (B, L, H), which cuts memory traffic on long contexts.
