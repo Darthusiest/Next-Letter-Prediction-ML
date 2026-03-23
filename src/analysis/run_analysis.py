@@ -47,15 +47,27 @@ def _infer_model_kwargs_from_state(model_name: str, state: dict) -> dict:
         out = {}
         if "embed.weight" in state:
             out["embed_dim"] = int(state["embed.weight"].shape[1])
-        # New architecture uses proj, legacy uses fc1
         if "proj.weight" in state:
             out["hidden_dim"] = int(state["proj.weight"].shape[0])
         elif "fc1.weight" in state:
             out["hidden_dim"] = int(state["fc1.weight"].shape[0])
-        extra = 0
-        while f"extra.{extra}.weight" in state:
-            extra += 1
-        out["num_hidden_layers"] = 1 + extra
+        # New architecture: SwiGLU blocks
+        if "blocks.0.ln.weight" in state:
+            num_blocks = 0
+            while f"blocks.{num_blocks}.ln.weight" in state:
+                num_blocks += 1
+            out["num_hidden_layers"] = 1 + num_blocks
+        else:
+            extra = 0
+            while f"extra.{extra}.weight" in state:
+                extra += 1
+            out["num_hidden_layers"] = 1 + extra
+        # Multi-head attention pooling
+        if "attn_heads.0.weight" in state:
+            num_heads = 0
+            while f"attn_heads.{num_heads}.weight" in state:
+                num_heads += 1
+            out["num_attn_heads"] = num_heads
         return out
 
     if model_name == "rnn":

@@ -105,7 +105,21 @@ class ModelAnalysisWrapper:
                     feats.append(h)
                 h_cat = torch.cat(feats, dim=1)[0]
                 return h_cat.cpu().numpy()
-            # MLP with attention pooling (new architecture)
+            # MLP with self-attention + multi-head attention pooling
+            if hasattr(self.model, "attn_heads") and hasattr(self.model, "self_attn"):
+                emb = self.model.embed(x) + self.model.pos_embed
+                emb = self.model.self_attn(emb)
+                pooled = []
+                for head in self.model.attn_heads:
+                    w = F.softmax(head(emb).squeeze(-1), dim=1)
+                    pooled.append((emb * w.unsqueeze(-1)).sum(dim=1))
+                h = torch.cat(pooled, dim=-1)
+                h = F.gelu(self.model.proj(h))
+                for block in self.model.blocks:
+                    h = block(h)
+                h = self.model.final_ln(h)
+                return h[0].cpu().numpy()
+            # Old MLP with single-head attention pooling
             if hasattr(self.model, "attn_score") and hasattr(self.model, "proj"):
                 emb = self.model.embed(x) + self.model.pos_embed
                 attn_w = F.softmax(self.model.attn_score(emb).squeeze(-1), dim=1)

@@ -120,7 +120,8 @@ python -m src.train --model ngram
 | `--plateau-lr` / `--no-plateau-lr` | `ReduceLROnPlateau` on epoch-end val loss, layered on cosine annealing (default follows `USE_PLATEAU_LR`). |
 | `--grad-clip` | Max gradient L2 norm (default: `GRAD_CLIP_NORM` in config, typically `1.0`; `0` disables). |
 | `--warmup-steps` | Linear LR warmup from near-zero to `LEARNING_RATE` (default: `WARMUP_STEPS`, typically `1000`; `0` disables). |
-| `--mlp-hidden-layers` | MLP depth: number of hidden Linear blocks (`proj` + `extra.*`), MLP only (default: `MLP_NUM_HIDDEN_LAYERS` in config). |
+| `--mlp-hidden-layers` | MLP depth: number of hidden Linear blocks (`proj` + SwiGLU residual blocks), MLP only (default: `MLP_NUM_HIDDEN_LAYERS` in config). |
+| `--mlp-attn-heads` | Number of attention heads for MLP self-attention and pooling (default: `MLP_NUM_ATTN_HEADS` in config, 4). |
 | `--dropout` | Dropout rate for all layers including embedding (default: `DROPOUT` in config). |
 | `--embed-dim` | Embedding dimension (default: `EMBED_DIM` in config). |
 | `--hidden-dim` | Hidden layer dimension (default: `HIDDEN_DIM` in config). |
@@ -142,6 +143,9 @@ python -m src.train --model mlp --data-source cleaned --dropout 0.4 --hidden-dim
 
 # Deeper network
 python -m src.train --model mlp --data-source cleaned --mlp-hidden-layers 7
+
+# More attention heads
+python -m src.train --model mlp --data-source cleaned --mlp-attn-heads 8
 
 # BPE subword tokenization
 python -m src.train --model mlp --data-source cleaned --tokenizer bpe --bpe-vocab-size 2000
@@ -249,7 +253,7 @@ print(out)
 - `src/vocab.py` — character vocabulary (build, encode, decode, save/load)
 - `src/dataset.py` — sliding-window dataset and train/val/test split
 - `src/models/baseline_ngram.py` — n-gram baseline
-- `src/models/mlp.py` — MLP with positional embeddings + attention pooling
+- `src/models/mlp.py` — MLP with self-attention, multi-head attention pooling, SwiGLU, and weight tying
 - `src/models/rnn.py` — LSTM over context
 - `src/models/cnn.py` — Conv1d over character embeddings
 - `src/tokenizer.py` — BPE subword tokenizer (HuggingFace `tokenizers`)
@@ -289,10 +293,11 @@ Each run creates plots/reports under `outputs/runs/<run_id>/`:
 | Batch size    | 128 |
 | Embed dim     | 128 |
 | Hidden dim    | 512 |
-| MLP hidden layers | 5 (`proj` + 4 residual `extra` blocks, each H→H with GELU+LayerNorm+dropout) |
-| MLP architecture | Positional embeddings + attention pooling over context positions (replaces flatten) |
-| Activation    | GELU (MLP, CNN); LSTM gates (RNN) |
-| Normalization | LayerNorm after each hidden block (MLP, RNN, CNN) |
+| MLP hidden layers | 5 (`proj` + 4 SwiGLU residual blocks with pre-LayerNorm) |
+| MLP attention heads | 4 (self-attention layer + multi-head attention pooling) |
+| MLP architecture | Positional embeddings → self-attention → multi-head attention pooling → SwiGLU blocks → weight-tied output |
+| Activation    | SwiGLU (MLP residual blocks); GELU (MLP projection, CNN); LSTM gates (RNN) |
+| Normalization | Pre-LayerNorm in MLP residual blocks + self-attention; post-LN in RNN, CNN |
 | Dropout       | 0.3 (embedding + hidden layers; all models have embedding dropout) |
 | Learning rate | 3e-4 (linear warmup 1000 steps → cosine annealing to 1% of peak) |
 | Epochs        | 50 (early stopping) |
@@ -305,7 +310,7 @@ Each run creates plots/reports under `outputs/runs/<run_id>/`:
 ## Next steps (roadmap)
 
 1. N-gram baseline — done
-2. MLP baseline — done (evolved: positional embeddings + attention pooling)
+2. MLP baseline — done (evolved: self-attention + multi-head pooling + SwiGLU + pre-LN + weight tying)
 3. LSTM/GRU — done (`rnn`)
 4. CNN over characters — done (`cnn`)
 5. BPE subword tokenization — done (`--tokenizer bpe`)

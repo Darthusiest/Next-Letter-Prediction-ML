@@ -2,7 +2,7 @@
 Character-level models for next-letter prediction.
 """
 
-from ..config import RNN_NUM_LAYERS, MLP_NUM_HIDDEN_LAYERS
+from ..config import RNN_NUM_LAYERS, MLP_NUM_HIDDEN_LAYERS, MLP_NUM_ATTN_HEADS
 
 from .baseline_ngram import NGramModel
 from .mlp import MLPCharModel
@@ -24,6 +24,7 @@ def get_model(name: str, vocab_size: int, context_length: int, **kwargs):
             hidden_dim=kwargs.get("hidden_dim", 128),
             dropout=kwargs.get("dropout", 0.2),
             num_hidden_layers=kwargs.get("num_hidden_layers", MLP_NUM_HIDDEN_LAYERS),
+            num_attn_heads=kwargs.get("num_attn_heads", MLP_NUM_ATTN_HEADS),
         )
     if name == "rnn":
         return RNNCharModel(

@@ -38,8 +38,9 @@ NUM_WORKERS = min(4, os.cpu_count() or 1)
 EMBED_DIM = 128
 HIDDEN_DIM = 512
 DROPOUT = 0.3
-# MLP: first block is flat→HIDDEN_DIM; extras are HIDDEN_DIM→HIDDEN_DIM with residual+GELU+LN.
+# MLP: first block is pool→HIDDEN_DIM; extras are SwiGLU residual blocks.
 MLP_NUM_HIDDEN_LAYERS = 5
+MLP_NUM_ATTN_HEADS = 4
 
 # RNN: extra LSTM layers multiply sequential work; 1 layer is the default for speed.
 RNN_NUM_LAYERS = 1

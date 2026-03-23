@@ -16,8 +16,9 @@ As of the current tree:
 - **Training entrypoint:** `python -m src.train` with argparse (`--model`,
   `--data-source`, `--max-chars`, `--eval-every`, `--compile`, `--rnn-layers`,
   `--weight-decay`, `--label-smoothing`, `--plateau-lr`, `--grad-clip`,
-  `--warmup-steps`, `--mlp-hidden-layers`, `--dropout`, `--embed-dim`,
-  `--hidden-dim`, `--tokenizer`, `--bpe-vocab-size`); programmatic `train()`
+  `--warmup-steps`, `--mlp-hidden-layers`, `--mlp-attn-heads`, `--dropout`,
+  `--embed-dim`, `--hidden-dim`, `--tokenizer`, `--bpe-vocab-size`);
+  programmatic `train()`
   in `src/train.py` supports further knobs (e.g. `num_workers`, `compile_model`).
 - **Device selection:** CUDA if available, else Apple **MPS**, else CPU
   (`src/utils/__init__.py`). Mixed precision: CUDA uses `GradScaler` + autocast;
@@ -94,10 +95,13 @@ High‑level flow, extending the current baseline:
 - **Models**
   - Baselines:
     - `NGramModel` (local spelling patterns only).
-    - `MLPCharModel` (positional embeddings + attention pooling over context,
-      then residual hidden blocks with GELU+LayerNorm+dropout; depth via
-      `num_hidden_layers` / `MLP_NUM_HIDDEN_LAYERS`, default 5;
-      CLI `--mlp-hidden-layers`, `--dropout`, `--embed-dim`, `--hidden-dim`).
+    - `MLPCharModel` (positional embeddings → single-layer multi-head
+      self-attention → multi-head attention pooling → SwiGLU residual blocks
+      with pre-LayerNorm → weight-tied output; depth via `num_hidden_layers` /
+      `MLP_NUM_HIDDEN_LAYERS`, default 5; heads via `num_attn_heads` /
+      `MLP_NUM_ATTN_HEADS`, default 4;
+      CLI `--mlp-hidden-layers`, `--mlp-attn-heads`, `--dropout`, `--embed-dim`,
+      `--hidden-dim`).
   - Sequence / local pattern models (plug into the same training loop via `models.get_model`):
     - `RNNCharModel` — LSTM over embeddings; last hidden state → logits.
     - `CNNCharModel` — Conv1d over embeddings with multiple kernel sizes +
@@ -169,8 +173,8 @@ High‑level flow, extending the current baseline:
 - `src/train.py` constructs the model via `get_model` using configuration from
   `src/config.py` and trains it using the same training loop (cross‑entropy
   loss, Adam optimizer, validation, early stopping).
-- CLI: `python -m src.train --model mlp` (optional `--mlp-hidden-layers N`),
-  or `rnn`, `cnn`, `ngram`.
+- CLI: `python -m src.train --model mlp` (optional `--mlp-hidden-layers N`,
+  `--mlp-attn-heads N`), or `rnn`, `cnn`, `ngram`.
 
 ---
 

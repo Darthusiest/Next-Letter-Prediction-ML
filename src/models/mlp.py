@@ -1,15 +1,71 @@
 """
-MLP with positional embeddings and attention pooling for next-letter prediction.
-Input: (batch, context_length) character ids.
-Embed + positional embed -> attention-weighted pool -> hidden blocks with residual -> logits.
+MLP with self-attention, multi-head attention pooling, and SwiGLU residual blocks
+for next-letter prediction.
 
-The attention pooling learns which context positions matter most for prediction,
-replacing the flat concatenation that treated all positions equally.
+Architecture:
+  embed(context) + pos_embed → embed_drop
+  → single-layer multi-head self-attention (positions interact)
+  → multi-head attention pooling → (B, num_heads * embed_dim)
+  → proj → GELU → dropout
+  → SwiGLU residual blocks with pre-LayerNorm
+  → final LayerNorm → [tie_proj] → logits
+
+Modern LLM techniques applied:
+  1. Multi-head attention pooling (replaces single-head; removes bottleneck)
+  2. SwiGLU activation in residual blocks (replaces GELU)
+  3. Pre-LayerNorm (LN on sublayer input, not output; stabler gradients)
+  4. Self-attention layer before pooling (positions interact before aggregation)
+  5. Weight tying (embed weights shared with output projection)
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+class SwiGLUBlock(nn.Module):
+    """Pre-LayerNorm residual block with SwiGLU: x + drop(SiLU(W_gate(LN(x))) * W_up(LN(x)))."""
+
+    def __init__(self, dim: int, dropout: float = 0.2):
+        super().__init__()
+        self.ln = nn.LayerNorm(dim)
+        self.w_gate = nn.Linear(dim, dim)
+        self.w_up = nn.Linear(dim, dim)
+        self.drop = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.ln(x)
+        return x + self.drop(F.silu(self.w_gate(h)) * self.w_up(h))
+
+
+class MultiHeadSelfAttention(nn.Module):
+    """Pre-LayerNorm multi-head self-attention (single layer)."""
+
+    def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.2):
+        super().__init__()
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.scale = self.head_dim ** -0.5
+
+        self.ln = nn.LayerNorm(embed_dim)
+        self.qkv = nn.Linear(embed_dim, 3 * embed_dim)
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+        self.attn_drop = nn.Dropout(dropout)
+        self.resid_drop = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, L, E = x.shape
+        h = self.ln(x)
+        qkv = self.qkv(h).reshape(B, L, 3, self.num_heads, self.head_dim)
+        qkv = qkv.permute(2, 0, 3, 1, 4)  # (3, B, heads, L, head_dim)
+        q, k, v = qkv.unbind(0)
+
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = F.softmax(attn, dim=-1)
+        attn = self.attn_drop(attn)
+
+        out = (attn @ v).transpose(1, 2).reshape(B, L, E)
+        return x + self.resid_drop(self.out_proj(out))
 
 
 class MLPCharModel(nn.Module):
@@ -22,44 +78,69 @@ class MLPCharModel(nn.Module):
         hidden_dim: int = 128,
         dropout: float = 0.2,
         num_hidden_layers: int = 1,
+        num_attn_heads: int = 4,
     ):
         super().__init__()
         if num_hidden_layers < 1:
             raise ValueError("num_hidden_layers must be >= 1")
+        if embed_dim % num_attn_heads != 0:
+            raise ValueError(
+                f"embed_dim ({embed_dim}) must be divisible by "
+                f"num_attn_heads ({num_attn_heads})"
+            )
         self.vocab_size = vocab_size
         self.context_length = context_length
         self.embed_dim = embed_dim
         self.hidden_dim = hidden_dim
         self.num_hidden_layers = num_hidden_layers
+        self.num_attn_heads = num_attn_heads
 
         self.embed = nn.Embedding(vocab_size, embed_dim)
         self.pos_embed = nn.Parameter(torch.zeros(1, context_length, embed_dim))
         nn.init.normal_(self.pos_embed, std=0.02)
         self.embed_drop = nn.Dropout(dropout)
 
-        # Attention pooling: learn per-position importance scores
-        self.attn_score = nn.Linear(embed_dim, 1)
-        self.proj = nn.Linear(embed_dim, hidden_dim)
-        self.ln1 = nn.LayerNorm(hidden_dim)
+        self.self_attn = MultiHeadSelfAttention(embed_dim, num_attn_heads, dropout)
+
+        # N independent attention heads; each scores positions and produces
+        # an embed_dim-sized weighted sum.  Concatenated → N * embed_dim.
+        self.attn_heads = nn.ModuleList(
+            [nn.Linear(embed_dim, 1) for _ in range(num_attn_heads)]
+        )
+        pool_dim = num_attn_heads * embed_dim
+
+        self.proj = nn.Linear(pool_dim, hidden_dim)
         self.dropout = nn.Dropout(dropout)
 
-        # H->H blocks with residual connections
-        self.extra = nn.ModuleList(
-            [nn.Linear(hidden_dim, hidden_dim) for _ in range(num_hidden_layers - 1)]
+        self.blocks = nn.ModuleList(
+            [SwiGLUBlock(hidden_dim, dropout) for _ in range(num_hidden_layers - 1)]
         )
-        self.extra_ln = nn.ModuleList(
-            [nn.LayerNorm(hidden_dim) for _ in range(num_hidden_layers - 1)]
-        )
-        self.fc2 = nn.Linear(hidden_dim, vocab_size)
+        self.final_ln = nn.LayerNorm(hidden_dim)
+
+        # Weight tying: if hidden_dim != embed_dim, project back first
+        if hidden_dim != embed_dim:
+            self.tie_proj = nn.Linear(hidden_dim, embed_dim, bias=False)
+        else:
+            self.tie_proj = None
+        self.fc2 = nn.Linear(embed_dim, vocab_size, bias=False)
+        self.fc2.weight = self.embed.weight
 
     def forward(self, context: torch.Tensor) -> torch.Tensor:
         x = self.embed(context) + self.pos_embed          # (B, L, E)
         x = self.embed_drop(x)
-        attn_weights = self.attn_score(x).squeeze(-1)     # (B, L)
-        attn_weights = F.softmax(attn_weights, dim=1)     # (B, L)
-        x = (x * attn_weights.unsqueeze(-1)).sum(dim=1)   # (B, E)
-        x = self.ln1(F.gelu(self.proj(x)))                # (B, H)
-        x = self.dropout(x)
-        for lin, ln in zip(self.extra, self.extra_ln):
-            x = x + self.dropout(ln(F.gelu(lin(x))))
-        return self.fc2(x)
+        x = self.self_attn(x)                             # (B, L, E)
+
+        pooled = []
+        for head in self.attn_heads:
+            w = F.softmax(head(x).squeeze(-1), dim=1)     # (B, L)
+            pooled.append((x * w.unsqueeze(-1)).sum(dim=1))  # (B, E)
+        x = torch.cat(pooled, dim=-1)                     # (B, N*E)
+
+        x = self.dropout(F.gelu(self.proj(x)))             # (B, H)
+        for block in self.blocks:
+            x = block(x)
+        x = self.final_ln(x)                              # (B, H)
+
+        if self.tie_proj is not None:
+            x = self.tie_proj(x)                          # (B, E)
+        return self.fc2(x)                                # (B, V)

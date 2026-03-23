@@ -41,6 +41,7 @@ from src.config import (
     SEED,
     RNN_NUM_LAYERS,
     MLP_NUM_HIDDEN_LAYERS,
+    MLP_NUM_ATTN_HEADS,
     WEIGHT_DECAY,
     LABEL_SMOOTHING,
     USE_PLATEAU_LR,
@@ -151,6 +152,7 @@ def train(
     hidden_dim: int | None = None,
     tokenizer_type: str | None = None,
     bpe_vocab_size: int | None = None,
+    mlp_num_attn_heads: int | None = None,
 ):
     wd = WEIGHT_DECAY if weight_decay is None else weight_decay
     ls = LABEL_SMOOTHING if label_smoothing is None else label_smoothing
@@ -267,6 +269,11 @@ def train(
                 if mlp_num_hidden_layers is None
                 else mlp_num_hidden_layers
             )
+            mlp_kw["num_attn_heads"] = (
+                MLP_NUM_ATTN_HEADS
+                if mlp_num_attn_heads is None
+                else mlp_num_attn_heads
+            )
         model = get_model(
             model_name,
             vocab_size=vocab.vocab_size,
@@ -294,6 +301,7 @@ def train(
             neural_model_kwargs["num_layers"] = model.lstm.num_layers
         if model_name == "mlp":
             neural_model_kwargs["num_hidden_layers"] = model.num_hidden_layers
+            neural_model_kwargs["num_attn_heads"] = model.num_attn_heads
 
         def _best_pt_payload() -> dict:
             payload = {
@@ -539,7 +547,10 @@ def train(
             "tokenizer": tok_type,
             **({"bpe_vocab_size": bpe_vs} if tok_type == "bpe" else {}),
             **(
-                {"mlp_num_hidden_layers": model.num_hidden_layers}
+                {
+                    "mlp_num_hidden_layers": model.num_hidden_layers,
+                    "mlp_num_attn_heads": model.num_attn_heads,
+                }
                 if model_name == "mlp"
                 else {}
             ),
@@ -661,6 +672,13 @@ def main():
         help="MLP hidden Linear depth for --model mlp (default: MLP_NUM_HIDDEN_LAYERS in config).",
     )
     parser.add_argument(
+        "--mlp-attn-heads",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Number of attention heads for MLP self-attention and pooling (default: MLP_NUM_ATTN_HEADS in config).",
+    )
+    parser.add_argument(
         "--dropout",
         type=float,
         default=None,
@@ -714,6 +732,8 @@ def main():
         kw["warmup_steps"] = args.warmup_steps
     if args.mlp_hidden_layers is not None:
         kw["mlp_num_hidden_layers"] = args.mlp_hidden_layers
+    if args.mlp_attn_heads is not None:
+        kw["mlp_num_attn_heads"] = args.mlp_attn_heads
     if args.dropout is not None:
         kw["dropout"] = args.dropout
     if args.embed_dim is not None:
