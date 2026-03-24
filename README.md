@@ -22,9 +22,10 @@ Place one or more `.txt` files (books, articles, etc.) in either:
 
 The training script loads and concatenates **all** `*.txt` files found in those two locations. The pipeline will:
 
-- Load and concatenate them
-- Clean: collapse runs of space/tab; keep case, digits, and punctuation (a–z, A–Z, 0–9, space, newline, tab, `. , ! ? ; : ' " - ( )`)
-- Build a character vocabulary and sliding-window (context → next char) examples
+- Load and concatenate them (stripping Project Gutenberg header/footer boilerplate per-file)
+- **Filter noise**: remove OCR garbage, short fragments, whitespace-dense lines, table-of-contents entries, and PDF page references
+- Clean: collapse runs of space/tab; keep case, digits, and punctuation (a-z, A-Z, 0-9, space, newline, tab, `. , ! ? ; : ' " - ( )`)
+- Build a character vocabulary and sliding-window (context -> next char) examples
 - Split contiguously into train / val / test (80 / 10 / 10). Target: ~20% val/test accuracy.
 
 ### Optional: PDF / EPUB → TXT
@@ -249,7 +250,7 @@ print(out)
 - `data/raw/nlp-ebooks/` — optional ebook sources (`.pdf`, `.epub`, etc.) and/or converted `.txt`
 - `data/processed/` — optional serialized vocab/indices
 - `src/config.py` — defaults (context length, batch size, paths, etc.)
-- `src/preprocess.py` — load and clean text
+- `src/preprocess.py` — load text (with Gutenberg stripping), filter OCR/boilerplate noise, and clean
 - `src/vocab.py` — character vocabulary (build, encode, decode, save/load)
 - `src/dataset.py` — sliding-window dataset and train/val/test split
 - `src/models/baseline_ngram.py` — n-gram baseline
@@ -263,7 +264,7 @@ print(out)
 - `src/analysis/` — post-training analysis pipeline (plots + reports)
 - `src/utils/` — utilities (seed/device/logging + io/plotting helpers)
 - `notebooks/` — exploratory notebooks
-- `tests/` — unit tests
+- `tests/` — unit tests (`test_models.py`, `test_preprocess.py`, `test_dataset.py`, `test_vocab.py`)
 
 ## Post-training analysis outputs
 
