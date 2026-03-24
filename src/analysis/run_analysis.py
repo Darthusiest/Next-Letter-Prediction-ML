@@ -62,8 +62,10 @@ def _infer_model_kwargs_from_state(model_name: str, state: dict) -> dict:
             while f"extra.{extra}.weight" in state:
                 extra += 1
             out["num_hidden_layers"] = 1 + extra
-        # Multi-head attention pooling
-        if "attn_heads.0.weight" in state:
+        # Batched attention pooling (new) or ModuleList heads (legacy)
+        if "attn_pool.weight" in state:
+            out["num_attn_heads"] = int(state["attn_pool.weight"].shape[0])
+        elif "attn_heads.0.weight" in state:
             num_heads = 0
             while f"attn_heads.{num_heads}.weight" in state:
                 num_heads += 1

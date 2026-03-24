@@ -89,18 +89,19 @@ def test_mlp_multihead_attention_pooling():
         vocab_size=10, context_length=8, embed_dim=4, hidden_dim=16,
         dropout=0.0, num_hidden_layers=1, num_attn_heads=2,
     )
-    assert hasattr(model, "attn_heads")
-    assert len(model.attn_heads) == 2
+    assert hasattr(model, "attn_pool")
+    assert model.attn_pool.out_features == 2
     x = torch.randint(0, 10, (2, 8))
     model.eval()
     with torch.no_grad():
         emb = model.embed(x) + model.pos_embed
-        for head in model.attn_heads:
-            weights = torch.softmax(head(emb).squeeze(-1), dim=1)
-            assert weights.shape == (2, 8)
-            sums = weights.sum(dim=1)
+        scores = model.attn_pool(emb)
+        weights = torch.softmax(scores, dim=1)
+        assert weights.shape == (2, 8, 2)
+        for n in range(2):
+            sums = weights[:, :, n].sum(dim=1)
             assert torch.allclose(sums, torch.ones(2), atol=1e-5), \
-                "attention weights must sum to 1"
+                "attention weights must sum to 1 per head"
 
 
 def test_mlp_self_attention():
@@ -236,7 +237,7 @@ def test_mlp_default_num_attn_heads():
         dropout=0.0, num_hidden_layers=1,
     )
     assert model.num_attn_heads == 4
-    assert len(model.attn_heads) == 4
+    assert model.attn_pool.out_features == 4
     x = torch.randint(0, 10, (2, 8))
     out = model(x)
     assert out.shape == (2, 10)

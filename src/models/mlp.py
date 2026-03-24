@@ -39,18 +39,17 @@ class SwiGLUBlock(nn.Module):
 
 
 class MultiHeadSelfAttention(nn.Module):
-    """Pre-LayerNorm multi-head self-attention (single layer)."""
+    """Pre-LayerNorm multi-head self-attention using scaled_dot_product_attention."""
 
     def __init__(self, embed_dim: int, num_heads: int, dropout: float = 0.2):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
-        self.scale = self.head_dim ** -0.5
+        self._dropout_p = dropout
 
         self.ln = nn.LayerNorm(embed_dim)
         self.qkv = nn.Linear(embed_dim, 3 * embed_dim)
         self.out_proj = nn.Linear(embed_dim, embed_dim)
-        self.attn_drop = nn.Dropout(dropout)
         self.resid_drop = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -60,11 +59,11 @@ class MultiHeadSelfAttention(nn.Module):
         qkv = qkv.permute(2, 0, 3, 1, 4)  # (3, B, heads, L, head_dim)
         q, k, v = qkv.unbind(0)
 
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = F.softmax(attn, dim=-1)
-        attn = self.attn_drop(attn)
-
-        out = (attn @ v).transpose(1, 2).reshape(B, L, E)
+        out = F.scaled_dot_product_attention(
+            q, k, v,
+            dropout_p=self._dropout_p if self.training else 0.0,
+        )
+        out = out.transpose(1, 2).reshape(B, L, E)
         return x + self.resid_drop(self.out_proj(out))
 
 
@@ -102,11 +101,10 @@ class MLPCharModel(nn.Module):
 
         self.self_attn = MultiHeadSelfAttention(embed_dim, num_attn_heads, dropout)
 
-        # N independent attention heads; each scores positions and produces
-        # an embed_dim-sized weighted sum.  Concatenated → N * embed_dim.
-        self.attn_heads = nn.ModuleList(
-            [nn.Linear(embed_dim, 1) for _ in range(num_attn_heads)]
-        )
+        # Batched attention pooling: one Linear scores all N heads at once.
+        # Each head learns independent position-importance scores, softmax over
+        # L, then produces an embed_dim-sized weighted sum.  Output: (B, N*E).
+        self.attn_pool = nn.Linear(embed_dim, num_attn_heads)
         pool_dim = num_attn_heads * embed_dim
 
         self.proj = nn.Linear(pool_dim, hidden_dim)
@@ -130,11 +128,11 @@ class MLPCharModel(nn.Module):
         x = self.embed_drop(x)
         x = self.self_attn(x)                             # (B, L, E)
 
-        pooled = []
-        for head in self.attn_heads:
-            w = F.softmax(head(x).squeeze(-1), dim=1)     # (B, L)
-            pooled.append((x * w.unsqueeze(-1)).sum(dim=1))  # (B, E)
-        x = torch.cat(pooled, dim=-1)                     # (B, N*E)
+        # Batched multi-head attention pooling: single matmul, no Python loop
+        scores = self.attn_pool(x)                         # (B, L, N)
+        weights = F.softmax(scores, dim=1)                 # (B, L, N)
+        x = weights.transpose(1, 2) @ x                   # (B, N, E)
+        x = x.reshape(x.size(0), -1)                      # (B, N*E)
 
         x = self.dropout(F.gelu(self.proj(x)))             # (B, H)
         for block in self.blocks:

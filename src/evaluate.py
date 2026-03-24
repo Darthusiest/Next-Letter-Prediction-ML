@@ -17,10 +17,10 @@ def evaluate(
     Returns (loss, accuracy). Loss is per-token; perplexity = exp(loss).
     """
     model.eval()
-    total_loss = 0.0
-    total_correct = 0
+    total_loss = torch.tensor(0.0, device=device)
+    total_correct = torch.tensor(0, device=device, dtype=torch.long)
     total_tokens = 0
-    non_blocking = device.type == "cuda"
+    non_blocking = device.type in ("cuda", "mps")
     with torch.inference_mode():
         for context, target in dataloader:
             context = context.to(device, non_blocking=non_blocking)
@@ -30,13 +30,12 @@ def evaluate(
                 loss = F.nll_loss(out, target, reduction="sum")
             else:
                 loss = F.cross_entropy(out, target, reduction="sum")
-            total_loss += loss.item()
-            pred = out.argmax(dim=1)
-            total_correct += (pred == target).sum().item()
+            total_loss += loss
+            total_correct += (out.argmax(dim=1) == target).sum()
             total_tokens += target.size(0)
     n = total_tokens
-    avg_loss = total_loss / n if n else 0.0
-    accuracy = total_correct / n if n else 0.0
+    avg_loss = total_loss.item() / n if n else 0.0
+    accuracy = total_correct.item() / n if n else 0.0
     return avg_loss, accuracy
 
 

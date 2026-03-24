@@ -371,27 +371,29 @@ def train(
     train_loss_history = []
     val_loss_history = []
     global_step = 0
+    non_blocking = device.type in ("cuda", "mps")
+
+    if use_amp and amp_device == "cuda":
+        autocast_cm = torch.amp.autocast("cuda", enabled=True)
+    elif use_amp and amp_device == "mps":
+        autocast_cm = torch.amp.autocast("mps", dtype=torch.float16)
+    else:
+        autocast_cm = contextlib.nullcontext()
+    ls_val = float(ls) if ls > 0 else 0.0
 
     for epoch in range(epochs):
         model.train()
-        total_loss = 0.0
+        total_loss_gpu = torch.tensor(0.0, device=device)
         num_batches = 0
         step = 0
         for context, target in train_loader:
-            non_blocking = device.type == "cuda"
             context = context.to(device, non_blocking=non_blocking)
             target = target.to(device, non_blocking=non_blocking)
             optimizer.zero_grad(set_to_none=True)
-            if use_amp and amp_device == "cuda":
-                autocast_cm = torch.amp.autocast("cuda", enabled=True)
-            elif use_amp and amp_device == "mps":
-                autocast_cm = torch.amp.autocast("mps", dtype=torch.float16)
-            else:
-                autocast_cm = contextlib.nullcontext()
             with autocast_cm:
                 logits = model(context)
                 loss = F.cross_entropy(
-                    logits, target, label_smoothing=float(ls) if ls > 0 else 0.0
+                    logits, target, label_smoothing=ls_val
                 )
             if use_scaler:
                 scaler.scale(loss).backward()
@@ -406,7 +408,7 @@ def train(
                     torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
                 optimizer.step()
             step_scheduler.step()
-            total_loss += loss.item()
+            total_loss_gpu += loss.detach()
             num_batches += 1
             step += 1
             global_step += 1
@@ -415,13 +417,13 @@ def train(
                     "Epoch %d step %d train_loss=%.4f",
                     epoch + 1,
                     step,
-                    total_loss / num_batches,
+                    total_loss_gpu.item() / num_batches,
                 )
             if step % eval_every == 0:
                 val_loss, val_acc = evaluate(model, val_loader, device, is_ngram=False)
                 logger.info(
                     "Epoch %d step %d train_loss=%.4f val_loss=%.4f val_acc=%.4f",
-                    epoch + 1, step, total_loss / num_batches, val_loss, val_acc,
+                    epoch + 1, step, total_loss_gpu.item() / num_batches, val_loss, val_acc,
                 )
                 model.train()
                 if val_loss < best_val_loss:
@@ -431,7 +433,7 @@ def train(
                         _best_pt_payload(),
                     )
 
-        epoch_train_loss = total_loss / num_batches
+        epoch_train_loss = total_loss_gpu.item() / num_batches
         epochs_list.append(epoch + 1)
         train_loss_history.append(epoch_train_loss)
         val_loss, val_acc = evaluate(model, val_loader, device, is_ngram=False)
