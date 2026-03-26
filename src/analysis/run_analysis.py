@@ -70,6 +70,14 @@ def _infer_model_kwargs_from_state(model_name: str, state: dict) -> dict:
             while f"attn_heads.{num_heads}.weight" in state:
                 num_heads += 1
             out["num_attn_heads"] = num_heads
+        # Stacked self-attention layers (RoPE) or legacy single self_attn
+        if "self_attn_layers.0.qkv.weight" in state:
+            n = 0
+            while f"self_attn_layers.{n}.qkv.weight" in state:
+                n += 1
+            out["num_self_attn_layers"] = n
+        elif "self_attn.qkv.weight" in state:
+            out["num_self_attn_layers"] = 1
         return out
 
     if model_name == "rnn":

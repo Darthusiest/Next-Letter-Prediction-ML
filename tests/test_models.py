@@ -8,7 +8,9 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.models.baseline_ngram import NGramModel
-from src.models.mlp import MLPCharModel
+import pytest
+
+from src.models.mlp import MLPCharModel, RotaryPositionEmbedding, SwiGLUBlock, MultiHeadSelfAttention
 from src.models.cnn import CNNCharModel
 from src.models.rnn import RNNCharModel
 from src.tokenizer import BPETokenizer
@@ -34,6 +36,7 @@ def test_mlp_forward():
         dropout=0.0,
         num_hidden_layers=1,
         num_attn_heads=2,
+        num_self_attn_layers=1,
     )
     x = torch.randint(0, 10, (2, 8))
     out = model(x)
@@ -50,6 +53,7 @@ def test_mlp_multilayer_forward():
         dropout=0.0,
         num_hidden_layers=3,
         num_attn_heads=2,
+        num_self_attn_layers=2,
     )
     x = torch.randint(0, 10, (2, 8))
     out = model(x)
@@ -75,13 +79,23 @@ def test_mlp_embed_dropout():
     assert torch.equal(out_c, out_d), "eval mode should be deterministic"
 
 
-def test_mlp_positional_embed():
+def test_mlp_rope():
+    """Verify RoPE replaces pos_embed and is applied in self-attention."""
     model = MLPCharModel(
         vocab_size=10, context_length=8, embed_dim=4, hidden_dim=16,
         dropout=0.0, num_hidden_layers=1, num_attn_heads=2,
     )
-    assert hasattr(model, "pos_embed")
-    assert model.pos_embed.shape == (1, 8, 4)
+    assert hasattr(model, "rope"), "model should have RoPE"
+    assert isinstance(model.rope, RotaryPositionEmbedding)
+    assert not hasattr(model, "pos_embed"), "pos_embed should be removed"
+    # RoPE should have precomputed sin/cos tables
+    assert hasattr(model.rope, "cos_cached")
+    assert hasattr(model.rope, "sin_cached")
+    x = torch.randint(0, 10, (2, 8))
+    model.eval()
+    out = model(x)
+    assert out.shape == (2, 10)
+    assert torch.isfinite(out).all()
 
 
 def test_mlp_multihead_attention_pooling():
@@ -94,7 +108,9 @@ def test_mlp_multihead_attention_pooling():
     x = torch.randint(0, 10, (2, 8))
     model.eval()
     with torch.no_grad():
-        emb = model.embed(x) + model.pos_embed
+        emb = model.embed(x)
+        for layer in model.self_attn_layers:
+            emb, _ = layer(emb, rope=model.rope)
         scores = model.attn_pool(emb)
         weights = torch.softmax(scores, dim=1)
         assert weights.shape == (2, 8, 2)
@@ -107,18 +123,20 @@ def test_mlp_multihead_attention_pooling():
 def test_mlp_self_attention():
     model = MLPCharModel(
         vocab_size=10, context_length=8, embed_dim=4, hidden_dim=16,
-        dropout=0.0, num_hidden_layers=1, num_attn_heads=2,
+        dropout=0.0, num_hidden_layers=1, num_attn_heads=2, num_self_attn_layers=2,
     )
-    assert hasattr(model, "self_attn")
-    assert model.self_attn.num_heads == 2
-    assert model.self_attn.head_dim == 2
+    assert hasattr(model, "self_attn_layers")
+    assert len(model.self_attn_layers) == 2
+    assert model.self_attn_layers[0].num_heads == 2
+    assert model.self_attn_layers[0].head_dim == 2
     x = torch.randint(0, 10, (2, 8))
     model.eval()
     with torch.no_grad():
-        emb = model.embed(x) + model.pos_embed
-        out = model.self_attn(emb)
-        assert out.shape == emb.shape, "self-attention should preserve shape"
-        assert torch.isfinite(out).all()
+        emb = model.embed(x)
+        for layer in model.self_attn_layers:
+            emb, _ = layer(emb, rope=model.rope)
+        assert emb.shape == (2, 8, 4), "self-attention should preserve shape"
+        assert torch.isfinite(emb).all()
 
 
 def test_mlp_swiglu_blocks():
@@ -148,7 +166,6 @@ def test_mlp_weight_tying():
     assert model.tie_proj is not None, \
         "tie_proj needed when hidden_dim != embed_dim"
 
-
 def test_mlp_weight_tying_same_dim():
     model = MLPCharModel(
         vocab_size=10, context_length=8, embed_dim=16, hidden_dim=16,
@@ -157,7 +174,6 @@ def test_mlp_weight_tying_same_dim():
     assert model.fc2.weight is model.embed.weight
     assert model.tie_proj is None, \
         "no tie_proj needed when hidden_dim == embed_dim"
-
 
 def test_mlp_pre_layernorm():
     """Verify residual blocks use pre-LN (LN on input, not output)."""
@@ -248,7 +264,7 @@ def test_mlp_gradient_flow():
     """Verify gradients flow through the full architecture."""
     model = MLPCharModel(
         vocab_size=10, context_length=8, embed_dim=4, hidden_dim=16,
-        dropout=0.0, num_hidden_layers=3, num_attn_heads=2,
+        dropout=0.0, num_hidden_layers=3, num_attn_heads=2, num_self_attn_layers=2,
     )
     x = torch.randint(0, 10, (2, 8))
     target = torch.randint(0, 10, (2,))
@@ -259,3 +275,158 @@ def test_mlp_gradient_flow():
         if p.requires_grad:
             assert p.grad is not None, f"no gradient for {name}"
             assert torch.isfinite(p.grad).all(), f"non-finite gradient for {name}"
+
+
+def test_mlp_causal_masking():
+    """Changing a future token must not affect self-attention outputs for earlier positions."""
+    model = MLPCharModel(
+        vocab_size=10, context_length=8, embed_dim=4, hidden_dim=16,
+        dropout=0.0, num_hidden_layers=1, num_attn_heads=2, num_self_attn_layers=2,
+    )
+    model.eval()
+    x = torch.randint(0, 10, (1, 8))
+    x_mod = x.clone()
+    x_mod[0, 7] = (x[0, 7] + 1) % 10
+
+    with torch.no_grad():
+        emb1 = model.embed(x)
+        for layer in model.self_attn_layers:
+            emb1, _ = layer(emb1, rope=model.rope)
+
+        emb2 = model.embed(x_mod)
+        for layer in model.self_attn_layers:
+            emb2, _ = layer(emb2, rope=model.rope)
+
+    assert torch.allclose(emb1[0, :7], emb2[0, :7], atol=1e-5), \
+        "causal masking: future token change must not affect earlier positions"
+    assert not torch.allclose(emb1[0, 7:], emb2[0, 7:], atol=1e-5), \
+        "changed token should produce different representation"
+
+
+def test_mlp_multi_self_attn_layers():
+    """Stacking 3 self-attention layers should work and gradients flow."""
+    model = MLPCharModel(
+        vocab_size=10, context_length=8, embed_dim=4, hidden_dim=16,
+        dropout=0.0, num_hidden_layers=2, num_attn_heads=2, num_self_attn_layers=3,
+    )
+    assert len(model.self_attn_layers) == 3
+    x = torch.randint(0, 10, (2, 8))
+    out = model(x)
+    assert out.shape == (2, 10)
+    assert torch.isfinite(out).all()
+
+    target = torch.randint(0, 10, (2,))
+    loss = torch.nn.functional.cross_entropy(out, target)
+    loss.backward()
+    for name, p in model.named_parameters():
+        if p.requires_grad:
+            assert p.grad is not None, f"no gradient for {name}"
+            assert torch.isfinite(p.grad).all(), f"non-finite gradient for {name}"
+
+
+def test_mlp_kv_cache_consistency():
+    """KV-cached incremental decoding must produce identical output to full forward."""
+    model = MLPCharModel(
+        vocab_size=10, context_length=8, embed_dim=4, hidden_dim=16,
+        dropout=0.0, num_hidden_layers=1, num_attn_heads=2, num_self_attn_layers=2,
+    )
+    model.eval()
+    x = torch.randint(0, 10, (1, 8))
+
+    with torch.no_grad():
+        out_full = model(x)
+
+        # Incremental: first 7 tokens, then the 8th
+        _, cache = model(x[:, :7], use_cache=True)
+        out_cached, _ = model(x[:, 7:8], kv_cache=cache, use_cache=True)
+
+    assert torch.allclose(out_full, out_cached, atol=1e-4), \
+        "KV-cached output must match full forward pass"
+
+
+def test_mlp_legacy_state_dict_loading():
+    """Old checkpoints with pos_embed and single self_attn should load correctly."""
+    model_new = MLPCharModel(
+        vocab_size=10, context_length=8, embed_dim=4, hidden_dim=16,
+        dropout=0.0, num_hidden_layers=1, num_attn_heads=2, num_self_attn_layers=1,
+    )
+    state = model_new.state_dict()
+
+    # Simulate old checkpoint: rename self_attn_layers.0.* → self_attn.*
+    # and add pos_embed
+    old_state = {}
+    for k, v in state.items():
+        if k.startswith("self_attn_layers.0."):
+            old_state["self_attn." + k[len("self_attn_layers.0."):]] = v
+        else:
+            old_state[k] = v
+    old_state["pos_embed"] = torch.zeros(1, 8, 4)
+
+    model_load = MLPCharModel(
+        vocab_size=10, context_length=8, embed_dim=4, hidden_dim=16,
+        dropout=0.0, num_hidden_layers=1, num_attn_heads=2, num_self_attn_layers=1,
+    )
+    model_load.load_state_dict(old_state)
+
+    model_new.eval()
+    model_load.eval()
+    x = torch.randint(0, 10, (1, 8))
+    with torch.no_grad():
+        out_new = model_new(x)
+        out_load = model_load(x)
+    assert torch.allclose(out_new, out_load, atol=1e-5), \
+        "legacy state dict should produce same output after remapping"
+
+
+def test_mlp_num_self_attn_layers_attribute_exists():
+    """MLPCharModel must expose num_self_attn_layers for train.py logging."""
+    model = MLPCharModel(
+        vocab_size=10, context_length=8, embed_dim=4, hidden_dim=16,
+        dropout=0.0, num_hidden_layers=1, num_attn_heads=2, num_self_attn_layers=3,
+    )
+    assert hasattr(model, "num_self_attn_layers")
+    assert model.num_self_attn_layers == 3
+
+
+def test_swiglu_block_residual_shape():
+    """SwiGLUBlock output shape must match input shape (residual connection)."""
+    block = SwiGLUBlock(dim=16, dropout=0.0)
+    x = torch.randn(2, 16)
+    out = block(x)
+    assert out.shape == x.shape
+    assert torch.isfinite(out).all()
+
+
+def test_multihead_self_attention_shape_preserved():
+    """MultiHeadSelfAttention output shape must equal input shape."""
+    attn = MultiHeadSelfAttention(embed_dim=8, num_heads=2, dropout=0.0)
+    x = torch.randn(2, 6, 8)
+    out, cache = attn(x)
+    assert out.shape == x.shape
+    assert cache is None
+
+
+def test_mlp_invalid_embed_dim_not_divisible_raises():
+    with pytest.raises(ValueError, match="divisible"):
+        MLPCharModel(
+            vocab_size=10, context_length=8, embed_dim=5, hidden_dim=16,
+            dropout=0.0, num_hidden_layers=1, num_attn_heads=2,
+        )
+
+
+def test_mlp_num_hidden_layers_zero_raises():
+    with pytest.raises(ValueError, match="num_hidden_layers"):
+        MLPCharModel(
+            vocab_size=10, context_length=8, embed_dim=4, hidden_dim=16,
+            dropout=0.0, num_hidden_layers=0, num_attn_heads=2,
+        )
+
+
+def test_clean_text_filters_noise():
+    """Noise filter removes OCR garbage and short fragments."""
+    from src.preprocess import clean_text
+    text = "Hello world.\nf\nCK\n22 155615\nThis is a sentence.\n"
+    cleaned = clean_text(text, filter_noise=True)
+    assert "Hello world" in cleaned
+    assert "This is a sentence" in cleaned
+    assert "22 155615" not in cleaned

@@ -42,6 +42,7 @@ from src.config import (
     RNN_NUM_LAYERS,
     MLP_NUM_HIDDEN_LAYERS,
     MLP_NUM_ATTN_HEADS,
+    MLP_NUM_SELF_ATTN_LAYERS,
     WEIGHT_DECAY,
     LABEL_SMOOTHING,
     USE_PLATEAU_LR,
@@ -153,6 +154,7 @@ def train(
     tokenizer_type: str | None = None,
     bpe_vocab_size: int | None = None,
     mlp_num_attn_heads: int | None = None,
+    mlp_num_self_attn_layers: int | None = None,
 ):
     wd = WEIGHT_DECAY if weight_decay is None else weight_decay
     ls = LABEL_SMOOTHING if label_smoothing is None else label_smoothing
@@ -274,6 +276,11 @@ def train(
                 if mlp_num_attn_heads is None
                 else mlp_num_attn_heads
             )
+            mlp_kw["num_self_attn_layers"] = (
+                MLP_NUM_SELF_ATTN_LAYERS
+                if mlp_num_self_attn_layers is None
+                else mlp_num_self_attn_layers
+            )
         model = get_model(
             model_name,
             vocab_size=vocab.vocab_size,
@@ -302,6 +309,7 @@ def train(
         if model_name == "mlp":
             neural_model_kwargs["num_hidden_layers"] = model.num_hidden_layers
             neural_model_kwargs["num_attn_heads"] = model.num_attn_heads
+            neural_model_kwargs["num_self_attn_layers"] = model.num_self_attn_layers
 
         def _best_pt_payload() -> dict:
             payload = {
@@ -336,9 +344,12 @@ def train(
             milestones.append(warmup)
             logger.info("Linear LR warmup over %d steps", warmup)
         cosine_steps = max(total_train_steps - warmup, 1)
+        # eta_min = 5% of peak LR keeps gradient updates meaningful late in
+        # training; too-low floors (~0.01×) caused underfitting in prior runs.
+        cosine_eta_min = lr * 0.05
         schedulers_parts.append(
             torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=cosine_steps, eta_min=lr * 0.01
+                optimizer, T_max=cosine_steps, eta_min=cosine_eta_min
             )
         )
         step_scheduler = (
@@ -349,8 +360,13 @@ def train(
             else schedulers_parts[0]
         )
         logger.info(
-            "Cosine annealing over %d steps (min LR %.1e)", cosine_steps, lr * 0.01
+            "Cosine annealing over %d steps (min LR %.1e)", cosine_steps, cosine_eta_min
         )
+        # NOTE: ReduceLROnPlateau modifies param_group['lr'] directly, but
+        # CosineAnnealingLR recomputes LR from base_lr on every step, so
+        # plateau reductions are overwritten within one batch.  We keep it as
+        # a diagnostic signal (logged reductions indicate stalled val loss)
+        # and for non-cosine fallback paths.
         plateau_scheduler = None
         if plateau:
             plateau_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -552,6 +568,7 @@ def train(
                 {
                     "mlp_num_hidden_layers": model.num_hidden_layers,
                     "mlp_num_attn_heads": model.num_attn_heads,
+                    "mlp_num_self_attn_layers": model.num_self_attn_layers,
                 }
                 if model_name == "mlp"
                 else {}
@@ -681,6 +698,13 @@ def main():
         help="Number of attention heads for MLP self-attention and pooling (default: MLP_NUM_ATTN_HEADS in config).",
     )
     parser.add_argument(
+        "--mlp-self-attn-layers",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Stacked causal self-attention layers with RoPE (default: MLP_NUM_SELF_ATTN_LAYERS in config).",
+    )
+    parser.add_argument(
         "--dropout",
         type=float,
         default=None,
@@ -736,6 +760,8 @@ def main():
         kw["mlp_num_hidden_layers"] = args.mlp_hidden_layers
     if args.mlp_attn_heads is not None:
         kw["mlp_num_attn_heads"] = args.mlp_attn_heads
+    if args.mlp_self_attn_layers is not None:
+        kw["mlp_num_self_attn_layers"] = args.mlp_self_attn_layers
     if args.dropout is not None:
         kw["dropout"] = args.dropout
     if args.embed_dim is not None:

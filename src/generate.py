@@ -1,6 +1,7 @@
 """
 Sample text from the model given a seed string.
 Autoregressive: repeatedly predict next character with temperature, append, repeat.
+Supports KV-cached incremental decoding for MLPCharModel.
 """
 
 import torch
@@ -22,6 +23,7 @@ def generate(
     """
     Generate `length` new characters after the seed.
     Seed is padded or truncated to context_length for the first step.
+    Uses KV caching when the model supports it (MLPCharModel with self_attn_layers).
     """
     if device is None:
         device = next(model.parameters()).device
@@ -40,25 +42,41 @@ def generate(
         ids = [pad_id] * (context_length - len(ids)) + ids
     generated = list(ids)
     is_ngram = hasattr(model, "_counts")
+    supports_cache = hasattr(model, "self_attn_layers") and not is_ngram
 
     with torch.no_grad():
-        for _ in range(length):
-            # Last context_length chars
-            context_ids = generated[-context_length:]
+        if supports_cache:
             context = torch.tensor(
-                [context_ids], dtype=torch.long, device=device
+                [generated[-context_length:]], dtype=torch.long, device=device
             )
-            out = model(context)
-            if is_ngram:
-                # out is log probs (1, V)
-                logits = out  # for sampling we need probs
-                probs = torch.exp(out).squeeze(0)
-            else:
-                logits = out.squeeze(0)
-                probs = F.softmax(logits / temperature, dim=0)
+            logits, kv_cache = model(context, use_cache=True)
+            probs = F.softmax(logits.squeeze(0) / temperature, dim=0)
             next_id = torch.multinomial(probs, 1).item()
             generated.append(next_id)
 
+            for _ in range(length - 1):
+                token = torch.tensor(
+                    [[next_id]], dtype=torch.long, device=device
+                )
+                logits, kv_cache = model(token, kv_cache=kv_cache, use_cache=True)
+                probs = F.softmax(logits.squeeze(0) / temperature, dim=0)
+                next_id = torch.multinomial(probs, 1).item()
+                generated.append(next_id)
+        else:
+            for _ in range(length):
+                context_ids = generated[-context_length:]
+                context = torch.tensor(
+                    [context_ids], dtype=torch.long, device=device
+                )
+                out = model(context)
+                if is_ngram:
+                    probs = torch.exp(out).squeeze(0)
+                else:
+                    logits = out.squeeze(0)
+                    probs = F.softmax(logits / temperature, dim=0)
+                next_id = torch.multinomial(probs, 1).item()
+                generated.append(next_id)
+
     # Return only the newly generated part (after seed)
-    new_ids = generated[len(ids) :]
+    new_ids = generated[len(ids):]
     return vocab.decode(new_ids)

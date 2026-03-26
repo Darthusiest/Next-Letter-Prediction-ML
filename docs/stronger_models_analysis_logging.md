@@ -13,15 +13,16 @@ As of the current tree:
 
 - **Models in `get_model` / training:** `ngram`, `mlp`, `rnn`, `cnn`. There is
   **no** transformer module in the repository.
-- **MLP architecture:** the MLP has been evolved with five techniques from modern
-  LLMs -- self-attention, multi-head attention pooling, SwiGLU activation,
-  pre-LayerNorm, and weight tying (see section 3.3 below). It is _not_ a full
-  transformer; there is one self-attention layer before pooling, not full
-  autoregressive causal attention.
+- **MLP architecture:** the MLP has been evolved with eight techniques from modern
+  LLMs -- stacked **causal** self-attention with **RoPE**, multi-head attention
+  pooling, SwiGLU activation, pre-LayerNorm, weight tying, and **KV caching**
+  for efficient generation (see section 3.3 below). It now uses autoregressive
+  causal masking (`is_causal=True`) across configurable self-attention depth.
 - **Training entrypoint:** `python -m src.train` with argparse (`--model`,
   `--data-source`, `--max-chars`, `--eval-every`, `--compile`, `--rnn-layers`,
   `--weight-decay`, `--label-smoothing`, `--plateau-lr`, `--grad-clip`,
-  `--warmup-steps`, `--mlp-hidden-layers`, `--mlp-attn-heads`, `--dropout`,
+  `--warmup-steps`, `--mlp-hidden-layers`, `--mlp-attn-heads`,
+  `--mlp-self-attn-layers`, `--dropout`,
   `--embed-dim`, `--hidden-dim`, `--tokenizer`, `--bpe-vocab-size`);
   programmatic `train()` in `src/train.py` supports further knobs (e.g.
   `num_workers`, `compile_model`).
@@ -47,11 +48,13 @@ As of the current tree:
   end-of-epoch** validation only (`EARLY_STOPPING_PATIENCE` in `config.py`;
   default 5). Mid-epoch `eval_every` can still refresh `best.pt` but does not
   advance patience (see README / `docs/design.md`).
-- **Regularization (neural):** config `WEIGHT_DECAY` (default `1e-2`),
-  `LABEL_SMOOTHING` (default `0.1`), `GRAD_CLIP_NORM` (default `1.0`),
-  `DROPOUT` (default `0.3`, applied to embeddings and hidden layers),
+- **Regularization (neural):** config `WEIGHT_DECAY` (default `5e-3`),
+  `LABEL_SMOOTHING` (default `0.03`), `GRAD_CLIP_NORM` (default `1.0`),
+  `DROPOUT` (default `0.15`, applied to embeddings and hidden layers),
   and `USE_PLATEAU_LR` + `ReduceLROnPlateau` on epoch-end val loss
-  (on by default; CLI `--no-plateau-lr` to disable).
+  (on by default; CLI `--no-plateau-lr` to disable).  Note: cosine annealing
+  steps per-batch and overwrites plateau reductions; plateau serves as a
+  diagnostic signal for stalled validation loss.
 - **Tokenization:** Character-level (default) or BPE subword via
   `--tokenizer bpe --bpe-vocab-size N`. Config `TOKENIZER_TYPE` and
   `BPE_VOCAB_SIZE` (default 2000). BPE tokenizer trained on corpus via
@@ -78,9 +81,10 @@ As of the current tree:
     - `RNNCharModel` (LSTM / GRU) in `src/models/rnn.py` -- **implemented**.
     - `CNNCharModel` in `src/models/cnn.py` -- **implemented**.
   - Evolve the MLP baseline with modern LLM techniques to improve capacity
-    without switching to a full transformer:
-    - Self-attention, multi-head pooling, SwiGLU, pre-LN, weight tying --
-      **implemented** in `src/models/mlp.py`.
+    without switching to a full standalone transformer:
+    - Stacked causal self-attention with RoPE, multi-head pooling, SwiGLU,
+      pre-LN, weight tying, KV caching -- **implemented** in
+      `src/models/mlp.py`.
 - **Linguistics-informed analysis**
   - Extend `src/analysis.py` with tools to evaluate the model in terms that
     matter for English spelling and morphology (vowels vs consonants, word
@@ -111,13 +115,14 @@ High-level flow, extending the current baseline:
 - **Models**
   - Baselines:
     - `NGramModel` (local spelling patterns only).
-    - `MLPCharModel` (positional embeddings -> single-layer multi-head
-      self-attention -> multi-head attention pooling -> SwiGLU residual blocks
-      with pre-LayerNorm -> weight-tied output; depth via `num_hidden_layers` /
+    - `MLPCharModel` (RoPE -> stacked causal self-attention -> multi-head
+      attention pooling -> SwiGLU residual blocks with pre-LayerNorm ->
+      weight-tied output; depth via `num_hidden_layers` /
       `MLP_NUM_HIDDEN_LAYERS`, default 5; heads via `num_attn_heads` /
-      `MLP_NUM_ATTN_HEADS`, default 4;
-      CLI `--mlp-hidden-layers`, `--mlp-attn-heads`, `--dropout`, `--embed-dim`,
-      `--hidden-dim`).
+      `MLP_NUM_ATTN_HEADS`, default 4; self-attention depth via
+      `num_self_attn_layers` / `MLP_NUM_SELF_ATTN_LAYERS`, default 2;
+      CLI `--mlp-hidden-layers`, `--mlp-attn-heads`, `--mlp-self-attn-layers`,
+      `--dropout`, `--embed-dim`, `--hidden-dim`).
   - Sequence / local pattern models (plug into the same training loop via `models.get_model`):
     - `RNNCharModel` -- LSTM over embeddings; last hidden state -> logits.
     - `CNNCharModel` -- Conv1d over embeddings with multiple kernel sizes +
@@ -182,54 +187,66 @@ High-level flow, extending the current baseline:
 ### 3.3 MLP architecture evolution (`src/models/mlp.py`)
 
 The MLP was evolved from a naive flatten-based architecture through several
-iterations to its current form, which incorporates five techniques from modern
+iterations to its current form, which incorporates eight techniques from modern
 LLMs:
 
 - **Interface**
-  - `MLPCharModel(vocab_size, context_length, embed_dim, hidden_dim, dropout, num_hidden_layers, num_attn_heads)`.
-  - `forward(context: LongTensor[B, L]) -> logits[B, V]`.
+  - `MLPCharModel(vocab_size, context_length, embed_dim, hidden_dim, dropout, num_hidden_layers, num_attn_heads, num_self_attn_layers)`.
+  - `forward(context: LongTensor[B, L], kv_cache=None, use_cache=False) -> logits[B, V]` (or `(logits, new_cache)` when `use_cache=True`).
 
 - **Architecture (current)**
 
   ```
-  embed(context) + pos_embed -> embed_drop           (B, L, E)
-  -> MultiHeadSelfAttention (pre-LN, N heads)         (B, L, E)
-  -> multi-head attention pooling (N heads)            (B, N*E)
-  -> proj -> GELU -> dropout                           (B, H)
-  -> SwiGLU residual blocks x (num_hidden_layers - 1)  (B, H)
-  -> final LayerNorm                                   (B, H)
-  -> [tie_proj if H != E]                              (B, E)
-  -> fc2 (weight-tied with embed)                      (B, V)
+  embed(context) [no pos_embed -- RoPE applied in attention]
+  -> embed_drop                                        (B, L, E)
+  -> N causal self-attention layers with RoPE           (B, L, E)
+  -> multi-head attention pooling (N_heads)             (B, N_heads*E)
+  -> proj -> GELU -> dropout                            (B, H)
+  -> SwiGLU residual blocks x (num_hidden_layers - 1)   (B, H)
+  -> final LayerNorm                                    (B, H)
+  -> [tie_proj if H != E]                               (B, E)
+  -> fc2 (weight-tied with embed)                       (B, V)
   ```
 
-- **Five modern LLM techniques applied**
+- **Eight modern LLM techniques applied**
 
-  1. **Multi-head attention pooling** (replaces single-head `attn_score`):
+  1. **Rotary Position Embeddings (RoPE)** (replaces learned `pos_embed`):
+     Precomputed sin/cos tables applied to Q and K in each self-attention layer.
+     Encodes relative position without learned per-position parameters, improving
+     generalization and eliminating a context-length-dependent parameter.
+
+  2. **Causal masking** (`is_causal=True` in `scaled_dot_product_attention`):
+     Each position can only attend to itself and earlier positions (left-to-right).
+     This matches autoregressive generation and prevents information leakage from
+     future tokens during training.
+
+  3. **Stacked self-attention layers** (configurable depth):
+     `num_self_attn_layers` (default 2) causal self-attention layers are applied
+     before attention pooling. Deeper attention captures richer inter-position
+     dependencies than a single layer. Stored as `nn.ModuleList`.
+
+  4. **Multi-head attention pooling** (replaces single-head `attn_score`):
      N independent Linear(E, 1) heads each learn separate position-importance
      scores, softmax over L, and produce an E-dim weighted sum. Concatenated
-     to N*E before projection. This eliminates the E-dim bottleneck that
-     limited the single-head version.
+     to N*E before projection.
 
-  2. **SwiGLU activation** (replaces GELU in residual blocks):
+  5. **SwiGLU activation** (replaces GELU in residual blocks):
      Each residual block uses `SiLU(W_gate(x)) * W_up(x)` -- two parallel
-     linear projections where one gates the other. For this small model,
-     both projections use `hidden_dim` (no intermediate expansion).
+     linear projections where one gates the other.
 
-  3. **Pre-LayerNorm** (instead of post-LayerNorm):
-     Changed from `x + drop(LN(act(linear(x))))` to `x + drop(act(linear(LN(x))))`.
+  6. **Pre-LayerNorm** (instead of post-LayerNorm):
      LayerNorm on the input to each sublayer rather than the output, with a
      `final_ln` after all blocks. More stable gradients in deeper networks.
 
-  4. **Self-attention layer before pooling**:
-     One layer of multi-head self-attention (Q=K=V=x, pre-LN, same number of
-     heads as pooling) between embedding and attention pooling. Lets positions
-     interact before aggregation -- e.g. "q" at position 50 can see "u" at
-     position 51. O(L^2) but L=64 is negligible.
+  7. **Weight tying** (embed <-> output):
+     `fc2.weight` is shared with `embed.weight`. When `hidden_dim != embed_dim`,
+     a learned `tie_proj = Linear(H, E, bias=False)` bridges the gap.
 
-  5. **Weight tying** (embed <-> output):
-     `fc2.weight` is shared with `embed.weight`. When `hidden_dim != embed_dim`
-     (the typical case: 512 vs 128), a learned `tie_proj = Linear(H, E, bias=False)`
-     bridges the gap. Reduces parameters and acts as a regularizer.
+  8. **KV caching** for efficient generation:
+     During autoregressive generation, K/V projections from previous positions
+     are cached so each new token only computes its own Q/K/V. Post-self-attention
+     hidden states are also cached for attention pooling. Only active during
+     `model.eval()` / `torch.no_grad()`.
 
 - **Architecture history**
 
@@ -239,16 +256,29 @@ LLMs:
   | MLP-2 | flatten, 3 layers, embed drop | +embedding dropout |
   | 5-layer | flatten, 5 layers, embed drop | +depth |
   | Attn pool | single-head attn pool, 5L | +positional embed, attention pooling |
-  | Current | self-attn + multi-head pool + SwiGLU + pre-LN + weight tying | Modern LLM techniques |
+  | LLM-v1 | self-attn + multi-head pool + SwiGLU + pre-LN + weight tying | Modern LLM techniques |
+  | Current | stacked causal self-attn + RoPE + KV cache | Causal masking, RoPE, depth, generation caching |
+
+- **Backward compatibility**
+  - `MLPCharModel.load_state_dict()` automatically remaps legacy checkpoint keys
+    (`self_attn.*` → `self_attn_layers.0.*`) and drops `pos_embed`.
+  - `num_self_attn_layers=1` (constructor default) preserves old behavior for
+    existing checkpoints; the config default `MLP_NUM_SELF_ATTN_LAYERS=2` is
+    used for new training.
+  - `_infer_model_kwargs_from_state` in `run_analysis.py` detects both old
+    (`self_attn.qkv.weight`) and new (`self_attn_layers.0.qkv.weight`) formats.
 
 - **Design rationale**
-  - The single-head attention pooling created a 128-dim bottleneck that limited
-    capacity. Multi-head pooling (4 heads x 128 = 512) feeds the full hidden_dim
-    into the projection, matching the residual block width.
+  - RoPE removes a parameter-count dependency on `context_length` and provides
+    better relative position encoding than learned positional embeddings.
+  - Causal masking aligns training with generation (left-to-right attention) and
+    prevents the model from "cheating" by seeing future characters.
+  - Stacking self-attention layers (default 2) lets the model build hierarchical
+    representations of character patterns across multiple levels of abstraction.
+  - KV caching makes generation O(1) per token in the self-attention layers
+    instead of O(L), relevant for longer generation sequences.
   - SwiGLU and pre-LN are standard in modern LLMs (LLaMA, PaLM) and improve
     training stability and expressiveness at negligible cost.
-  - Self-attention lets the model capture local interactions (digraphs, common
-    pairs) at the embedding level before pooling collapses the sequence.
   - Weight tying is a free regularizer that also reduces the parameter count.
 
 ### 3.4 Integration via `get_model` and `train.py`
@@ -374,9 +404,11 @@ structure** in English:
    checkpoint.
 4. ~~Add experiment logging helpers and wire them into `train.py`.~~ **Done**
    (`log_run`, `metrics.json`, run directories).
-5. ~~Evolve MLP with modern LLM techniques~~ -- **Done**: self-attention,
-   multi-head attention pooling, SwiGLU, pre-LayerNorm, weight tying.
-   Config `MLP_NUM_ATTN_HEADS`, CLI `--mlp-attn-heads`.
+5. ~~Evolve MLP with modern LLM techniques~~ -- **Done**: stacked causal
+   self-attention with RoPE, multi-head attention pooling, SwiGLU,
+   pre-LayerNorm, weight tying, KV caching.
+   Config `MLP_NUM_ATTN_HEADS`, `MLP_NUM_SELF_ATTN_LAYERS`;
+   CLI `--mlp-attn-heads`, `--mlp-self-attn-layers`.
 6. Flesh out analysis with vowel/consonant accuracy, confusion matrices,
    positional analysis, and context/embedding/temperature experiments -- **partially
    done** (`src/analysis/` modules; some items remain aspirational).

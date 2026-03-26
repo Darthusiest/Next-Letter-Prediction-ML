@@ -116,13 +116,14 @@ python -m src.train --model ngram
 | `--eval-every` | Run validation every N training steps (default: `EVAL_EVERY_N_STEPS` in `src/config.py`). |
 | `--compile` | Enable `torch.compile` on the model (sometimes helps RNN/CNN on GPU/MPS). |
 | `--rnn-layers` | LSTM layer count for `--model rnn` (default: `RNN_NUM_LAYERS` in `src/config.py`, currently 1). |
-| `--weight-decay` | AdamW weight decay (default: `WEIGHT_DECAY`, typically `1e-2`; `0.0` disables). |
-| `--label-smoothing` | Neural cross-entropy label smoothing (default: `LABEL_SMOOTHING`, typically `0.1`; `0.0` disables). |
-| `--plateau-lr` / `--no-plateau-lr` | `ReduceLROnPlateau` on epoch-end val loss, layered on cosine annealing (default follows `USE_PLATEAU_LR`). |
+| `--weight-decay` | AdamW weight decay (default: `WEIGHT_DECAY`, currently `5e-3`; `0.0` disables). |
+| `--label-smoothing` | Neural cross-entropy label smoothing (default: `LABEL_SMOOTHING`, currently `0.03`; `0.0` disables). |
+| `--plateau-lr` / `--no-plateau-lr` | `ReduceLROnPlateau` on epoch-end val loss (default follows `USE_PLATEAU_LR`). Note: cosine annealing steps per-batch and overwrites plateau reductions; plateau serves as a diagnostic signal. |
 | `--grad-clip` | Max gradient L2 norm (default: `GRAD_CLIP_NORM` in config, typically `1.0`; `0` disables). |
 | `--warmup-steps` | Linear LR warmup from near-zero to `LEARNING_RATE` (default: `WARMUP_STEPS`, typically `1000`; `0` disables). |
 | `--mlp-hidden-layers` | MLP depth: number of hidden Linear blocks (`proj` + SwiGLU residual blocks), MLP only (default: `MLP_NUM_HIDDEN_LAYERS` in config). |
 | `--mlp-attn-heads` | Number of attention heads for MLP self-attention and pooling (default: `MLP_NUM_ATTN_HEADS` in config, 4). |
+| `--mlp-self-attn-layers` | Stacked causal self-attention layers with RoPE (default: `MLP_NUM_SELF_ATTN_LAYERS` in config, 2). |
 | `--dropout` | Dropout rate for all layers including embedding (default: `DROPOUT` in config). |
 | `--embed-dim` | Embedding dimension (default: `EMBED_DIM` in config). |
 | `--hidden-dim` | Hidden layer dimension (default: `HIDDEN_DIM` in config). |
@@ -254,7 +255,7 @@ print(out)
 - `src/vocab.py` — character vocabulary (build, encode, decode, save/load)
 - `src/dataset.py` — sliding-window dataset and train/val/test split
 - `src/models/baseline_ngram.py` — n-gram baseline
-- `src/models/mlp.py` — MLP with self-attention, multi-head attention pooling, SwiGLU, and weight tying
+- `src/models/mlp.py` — MLP with stacked causal self-attention (RoPE), multi-head attention pooling, SwiGLU, KV cache, and weight tying
 - `src/models/rnn.py` — LSTM over context
 - `src/models/cnn.py` — Conv1d over character embeddings
 - `src/tokenizer.py` — BPE subword tokenizer (HuggingFace `tokenizers`)
@@ -264,7 +265,7 @@ print(out)
 - `src/analysis/` — post-training analysis pipeline (plots + reports)
 - `src/utils/` — utilities (seed/device/logging + io/plotting helpers)
 - `notebooks/` — exploratory notebooks
-- `tests/` — unit tests (`test_models.py`, `test_preprocess.py`, `test_dataset.py`, `test_vocab.py`)
+- `tests/` — unit tests (`test_models.py`, `test_preprocess.py`, `test_evaluate.py`, `test_train_helpers.py`, `test_tokenizer.py`, `test_dataset.py`, `test_vocab.py`)
 
 ## Post-training analysis outputs
 
@@ -295,27 +296,32 @@ Each run creates plots/reports under `outputs/runs/<run_id>/`:
 | Embed dim     | 128 |
 | Hidden dim    | 512 |
 | MLP hidden layers | 5 (`proj` + 4 SwiGLU residual blocks with pre-LayerNorm) |
-| MLP attention heads | 4 (self-attention layer + multi-head attention pooling) |
-| MLP architecture | Positional embeddings → self-attention → multi-head attention pooling → SwiGLU blocks → weight-tied output |
+| MLP attention heads | 4 (self-attention layers + multi-head attention pooling) |
+| MLP self-attention layers | 2 (stacked causal self-attention with RoPE) |
+| MLP architecture | RoPE (no learned pos_embed) → N causal self-attention layers → multi-head attention pooling → SwiGLU blocks → weight-tied output |
+| Position encoding | Rotary Position Embeddings (RoPE) applied to Q/K in each self-attention layer |
 | Activation    | SwiGLU (MLP residual blocks); GELU (MLP projection, CNN); LSTM gates (RNN) |
 | Normalization | Pre-LayerNorm in MLP residual blocks + self-attention; post-LN in RNN, CNN |
-| Dropout       | 0.3 (embedding + hidden layers; all models have embedding dropout) |
-| Learning rate | 3e-4 (linear warmup 1000 steps → cosine annealing to 1% of peak) |
-| Epochs        | 50 (early stopping) |
+| Dropout       | 0.15 (embedding + hidden layers; all models have embedding dropout) |
+| Learning rate | 3e-4 (linear warmup 1000 steps → cosine annealing to 5% of peak) |
+| Epochs        | 75 (early stopping) |
 | Early stop patience | 5 epochs without **epoch-end** val improvement |
-| Optimizer     | AdamW (`WEIGHT_DECAY` 1e-2, `LABEL_SMOOTHING` 0.1, `GRAD_CLIP_NORM` 1.0) |
-| LR schedule   | Warmup → cosine decay + `ReduceLROnPlateau` on epoch-end val loss |
+| Optimizer     | AdamW (`WEIGHT_DECAY` 5e-3, `LABEL_SMOOTHING` 0.03, `GRAD_CLIP_NORM` 1.0) |
+| LR schedule   | Warmup → cosine decay (eta_min = 5% of peak LR to prevent near-zero learning late in training) |
 | Tokenization  | Character-level (default) or BPE subword (`--tokenizer bpe`) |
+| KV cache      | Supported for MLP during generation (incremental decoding) |
 | DataLoader workers | Up to 4 (`NUM_WORKERS` in `src/config.py`) |
 
 ## Next steps (roadmap)
 
 1. N-gram baseline — done
-2. MLP baseline — done (evolved: self-attention + multi-head pooling + SwiGLU + pre-LN + weight tying)
+2. MLP baseline — done (evolved: stacked causal self-attention with RoPE + multi-head pooling + SwiGLU + pre-LN + weight tying + KV cache)
 3. LSTM/GRU — done (`rnn`)
 4. CNN over characters — done (`cnn`)
 5. BPE subword tokenization — done (`--tokenizer bpe`)
-6. Analysis: vowel/consonant accuracy, confusion, context length, temperature
+6. OCR/boilerplate noise filtering — done (heuristic line filter in preprocessing)
+7. Regularization tuning — done (reduced dropout/smoothing/decay; extended schedule)
+8. Analysis: vowel/consonant accuracy, confusion, context length, temperature
 
 Train a model from the repo root (use the project venv):
 

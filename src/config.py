@@ -37,26 +37,28 @@ NUM_WORKERS = min(4, os.cpu_count() or 1)
 # Model architecture
 EMBED_DIM = 128
 HIDDEN_DIM = 512
-DROPOUT = 0.3
+DROPOUT = 0.15
 # MLP: first block is pool→HIDDEN_DIM; extras are SwiGLU residual blocks.
 MLP_NUM_HIDDEN_LAYERS = 5
 MLP_NUM_ATTN_HEADS = 4
+# Stacked causal self-attention layers (RoPE + SDPA) before attention pooling.
+MLP_NUM_SELF_ATTN_LAYERS = 2
 
 # RNN: extra LSTM layers multiply sequential work; 1 layer is the default for speed.
 RNN_NUM_LAYERS = 1
 
 # Training
 LEARNING_RATE = 3e-4
-EPOCHS = 50
+EPOCHS = 75
 EVAL_EVERY_N_STEPS = 5000
 # Early stopping uses **end-of-epoch** validation only (not eval_every mid-epoch).
 EARLY_STOPPING_PATIENCE = 5
 CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"
 
 # AdamW weight decay (decoupled from gradient, unlike Adam L2).
-WEIGHT_DECAY = 1e-2
+WEIGHT_DECAY = 5e-3
 # Soft targets for cross-entropy (neural models only); 0 disables.
-LABEL_SMOOTHING = 0.1
+LABEL_SMOOTHING = 0.05
 # ReduceLROnPlateau on epoch-end validation loss (on top of cosine annealing).
 USE_PLATEAU_LR = True
 LR_PLATEAU_FACTOR = 0.5

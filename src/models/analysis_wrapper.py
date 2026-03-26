@@ -105,9 +105,24 @@ class ModelAnalysisWrapper:
                     feats.append(h)
                 h_cat = torch.cat(feats, dim=1)[0]
                 return h_cat.cpu().numpy()
-            # MLP with self-attention + batched multi-head attention pooling
+            # MLP with stacked self-attention layers (RoPE) + batched pooling
+            if hasattr(self.model, "attn_pool") and hasattr(self.model, "self_attn_layers"):
+                emb = self.model.embed(x)
+                for layer in self.model.self_attn_layers:
+                    emb, _ = layer(emb, rope=self.model.rope)
+                scores = self.model.attn_pool(emb)
+                weights = F.softmax(scores, dim=1)
+                h = (weights.transpose(1, 2) @ emb).reshape(1, -1)
+                h = F.gelu(self.model.proj(h))
+                for block in self.model.blocks:
+                    h = block(h)
+                h = self.model.final_ln(h)
+                return h[0].cpu().numpy()
+            # Legacy: MLP with single self_attn + batched pooling + pos_embed
             if hasattr(self.model, "attn_pool") and hasattr(self.model, "self_attn"):
-                emb = self.model.embed(x) + self.model.pos_embed
+                emb = self.model.embed(x)
+                if hasattr(self.model, "pos_embed"):
+                    emb = emb + self.model.pos_embed
                 emb = self.model.self_attn(emb)
                 scores = self.model.attn_pool(emb)
                 weights = F.softmax(scores, dim=1)
@@ -117,9 +132,11 @@ class ModelAnalysisWrapper:
                     h = block(h)
                 h = self.model.final_ln(h)
                 return h[0].cpu().numpy()
-            # MLP with self-attention + ModuleList attention heads (legacy)
+            # Legacy: MLP with ModuleList attention heads
             if hasattr(self.model, "attn_heads") and hasattr(self.model, "self_attn"):
-                emb = self.model.embed(x) + self.model.pos_embed
+                emb = self.model.embed(x)
+                if hasattr(self.model, "pos_embed"):
+                    emb = emb + self.model.pos_embed
                 emb = self.model.self_attn(emb)
                 pooled = []
                 for head in self.model.attn_heads:
@@ -131,9 +148,11 @@ class ModelAnalysisWrapper:
                     h = block(h)
                 h = self.model.final_ln(h)
                 return h[0].cpu().numpy()
-            # Old MLP with single-head attention pooling
+            # Legacy: Old MLP with single-head attention pooling
             if hasattr(self.model, "attn_score") and hasattr(self.model, "proj"):
-                emb = self.model.embed(x) + self.model.pos_embed
+                emb = self.model.embed(x)
+                if hasattr(self.model, "pos_embed"):
+                    emb = emb + self.model.pos_embed
                 attn_w = F.softmax(self.model.attn_score(emb).squeeze(-1), dim=1)
                 pooled = (emb * attn_w.unsqueeze(-1)).sum(dim=1)
                 h = F.gelu(self.model.proj(pooled))[0]

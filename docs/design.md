@@ -15,10 +15,10 @@ for the project, to be used later when writing a paper or longer report.
 
 **Current codebase:** n-gram, MLP, LSTM (`RNNCharModel`), and CNN (`CNNCharModel`)
 are implemented and selectable via `python -m src.train --model ...`.
-Causal **transformer** models are not included (heavy for small GPUs; deferred).
-The MLP incorporates key transformer-inspired techniques (self-attention,
-multi-head pooling, SwiGLU, pre-LayerNorm, weight tying) without full
-autoregressive self-attention.
+A standalone causal **transformer** module is not included; instead, the MLP
+incorporates key transformer techniques: stacked **causal** self-attention with
+**Rotary Position Embeddings (RoPE)**, multi-head attention pooling, SwiGLU,
+pre-LayerNorm, weight tying, and **KV caching** for efficient generation.
 
 ---
 
@@ -168,29 +168,36 @@ where the repo already implements the family.
     local models.
 
 - **MLP over fixed window (evolved neural baseline):** -- **implemented** (`mlp`)
-  - Input: fixed context of length \(L\) (e.g. 64) -> char embed + positional
-    embed -> single-layer multi-head self-attention -> multi-head attention
-    pooling -> projection -> SwiGLU residual blocks -> weight-tied output logits.
-  - Incorporates five techniques from modern LLMs:
-    1. **Multi-head attention pooling** -- N independent heads each score
+  - Input: fixed context of length \(L\) (e.g. 64) -> char embed (no learned
+    positional embeddings; RoPE applied in attention) -> N stacked causal
+    self-attention layers -> multi-head attention pooling -> projection ->
+    SwiGLU residual blocks -> weight-tied output logits.
+  - Incorporates eight techniques from modern LLMs:
+    1. **Rotary Position Embeddings (RoPE)** -- relative position encoding
+       applied to Q and K in each self-attention layer, replacing learned
+       `pos_embed`.  Better generalization and no per-sequence-length parameter.
+    2. **Causal masking** -- `is_causal=True` in `scaled_dot_product_attention`
+       enforces left-to-right attention (each position only sees earlier
+       positions), matching autoregressive generation.
+    3. **Stacked self-attention** -- configurable number of causal self-attention
+       layers (`num_self_attn_layers`, default 2) before attention pooling.
+       Deeper attention captures richer inter-position dependencies.
+    4. **Multi-head attention pooling** -- N independent heads each score
        positions and produce an `embed_dim`-sized weighted sum; concatenated
-       to `N * embed_dim` before projection, eliminating the single-head
-       bottleneck.
-    2. **SwiGLU activation** -- residual blocks use `SiLU(W_gate(x)) * W_up(x)`
+       to `N * embed_dim` before projection.
+    5. **SwiGLU activation** -- residual blocks use `SiLU(W_gate(x)) * W_up(x)`
        (gated linear unit) instead of plain GELU.
-    3. **Pre-LayerNorm** -- LayerNorm is applied to the input of each sublayer
-       (`x + sublayer(LN(x))`) rather than the output, with a final LayerNorm
-       after all blocks.  More stable gradients in deeper networks.
-    4. **Self-attention layer** -- one multi-head self-attention layer between
-       embedding and pooling, so positions can interact (e.g. "q" at position
-       50 sees "u" at 51) before aggregation.  O(L^2) but L=64 is tiny.
-    5. **Weight tying** -- `fc2.weight` is shared with `embed.weight`
-       (transposed); a learned projection bridges `hidden_dim -> embed_dim`
-       when they differ.  Reduces parameters and regularizes.
-  - Configurable via `--mlp-hidden-layers`, `--mlp-attn-heads`, `--embed-dim`,
-    `--hidden-dim`, `--dropout`.
+    6. **Pre-LayerNorm** -- LayerNorm on sublayer input (`x + sublayer(LN(x))`),
+       with a final LayerNorm after all blocks.  Stabler gradients in depth.
+    7. **Weight tying** -- `fc2.weight` shared with `embed.weight`; a learned
+       projection bridges `hidden_dim -> embed_dim` when they differ.
+    8. **KV caching** -- optional key/value cache in self-attention for efficient
+       incremental generation (only compute new token's Q/K/V, reuse cached
+       context).
+  - Configurable via `--mlp-hidden-layers`, `--mlp-attn-heads`,
+    `--mlp-self-attn-layers`, `--embed-dim`, `--hidden-dim`, `--dropout`.
   - Still a fixed-window model -- does not model variable-length history beyond
-    the context length.
+    the context length (KV cache extends the effective window during generation).
 
 - **RNN / LSTM / GRU:** -- **implemented** (`rnn`, LSTM in code)
   - Processes characters sequentially with a hidden state.
@@ -203,11 +210,11 @@ where the repo already implements the family.
   - Excellent for **local spelling**, digraphs, trigraphs, doubled letters.
   - Needs depth for long-range effects; mostly a "local pattern" expert.
 
-- **Causal transformer (self-attention):** -- **not in this repository**
-  - Would use causal self-attention over previous characters and positional
-    encodings; strong on long-range structure but more compute- and
-    memory-intensive.
-  - Omitted by design to keep training feasible on CPU and modest GPUs.
+- **Causal transformer (standalone):** -- **not a separate module**
+  - A full autoregressive transformer with dedicated decoder blocks is not
+    included as a separate model.  Instead, the MLP now incorporates causal
+    self-attention with RoPE (see above), bridging the gap without requiring
+    a separate transformer implementation.
 
 **Build order (original plan) vs current:**
 
@@ -239,9 +246,13 @@ where the repo already implements the family.
   RNN hidden, CNN channels).
   - 128-512 depending on corpus size and compute budget; default **512**.
 
-- **Attention heads (MLP):** number of heads for both the self-attention layer
+- **Attention heads (MLP):** number of heads for both the self-attention layers
   and the multi-head attention pooling. Default: **4**. Configurable via
   `MLP_NUM_ATTN_HEADS` in config or `--mlp-attn-heads` on the CLI.
+
+- **Self-attention depth (MLP):** number of stacked causal self-attention layers
+  with RoPE, applied before attention pooling. Default: **2**. Configurable via
+  `MLP_NUM_SELF_ATTN_LAYERS` in config or `--mlp-self-attn-layers` on the CLI.
 
 - **Projection layer & logits:** final linear layer maps hidden states to a
   vector of size `vocab_size`, producing **logits** (unnormalized scores for
