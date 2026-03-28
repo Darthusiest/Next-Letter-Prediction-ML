@@ -117,10 +117,11 @@ python -m src.train --model ngram
 | `--compile` | Enable `torch.compile` on the model (sometimes helps RNN/CNN on GPU/MPS). |
 | `--rnn-layers` | LSTM layer count for `--model rnn` (default: `RNN_NUM_LAYERS` in `src/config.py`, currently 1). |
 | `--weight-decay` | AdamW weight decay (default: `WEIGHT_DECAY`, currently `5e-3`; `0.0` disables). |
-| `--label-smoothing` | Neural cross-entropy label smoothing (default: `LABEL_SMOOTHING`, currently `0.03`; `0.0` disables). |
+| `--label-smoothing` | Neural cross-entropy label smoothing (default: `LABEL_SMOOTHING`, currently `0.05`; `0.0` disables). |
 | `--plateau-lr` / `--no-plateau-lr` | `ReduceLROnPlateau` on epoch-end val loss (default follows `USE_PLATEAU_LR`). Note: cosine annealing steps per-batch and overwrites plateau reductions; plateau serves as a diagnostic signal. |
 | `--grad-clip` | Max gradient L2 norm (default: `GRAD_CLIP_NORM` in config, typically `1.0`; `0` disables). |
 | `--warmup-steps` | Linear LR warmup from near-zero to `LEARNING_RATE` (default: `WARMUP_STEPS`, typically `1000`; `0` disables). |
+| `--cosine-restarts` / `--no-cosine-restarts` | Cosine LR schedule with warm restarts vs single cosine decay (default: `USE_COSINE_WARM_RESTARTS` in config, `True`). |
 | `--mlp-hidden-layers` | MLP depth: number of hidden Linear blocks (`proj` + SwiGLU residual blocks), MLP only (default: `MLP_NUM_HIDDEN_LAYERS` in config). |
 | `--mlp-attn-heads` | Number of attention heads for MLP self-attention and pooling (default: `MLP_NUM_ATTN_HEADS` in config, 4). |
 | `--mlp-self-attn-layers` | Stacked causal self-attention layers with RoPE (default: `MLP_NUM_SELF_ATTN_LAYERS` in config, 2). |
@@ -300,16 +301,16 @@ Each run creates plots/reports under `outputs/runs/<run_id>/`:
 | MLP hidden layers | 5 (`proj` + 4 SwiGLU residual blocks with pre-LayerNorm) |
 | MLP attention heads | 4 (self-attention layers + multi-head attention pooling) |
 | MLP self-attention layers | 2 (stacked causal self-attention with RoPE) |
-| MLP architecture | RoPE (no learned pos_embed) → N causal self-attention layers → multi-head attention pooling → SwiGLU blocks → weight-tied output |
+| MLP architecture | RoPE (no learned pos_embed) → N causal self-attention layers → multi-head attention pooling → LayerNorm(pool) → SwiGLU blocks → weight-tied output; embeddings scaled by √d |
 | Position encoding | Rotary Position Embeddings (RoPE) applied to Q/K in each self-attention layer |
 | Activation    | SwiGLU (MLP residual blocks); GELU (MLP projection, CNN); LSTM gates (RNN) |
-| Normalization | Pre-LayerNorm in MLP residual blocks + self-attention; post-LN in RNN, CNN |
+| Normalization | Pre-LayerNorm in MLP residual blocks + self-attention; LayerNorm on pooled attention features before `proj`; post-LN in RNN, CNN |
 | Dropout       | 0.13 (embedding + hidden layers; all models have embedding dropout) |
-| Learning rate | 3e-4 (linear warmup 1000 steps → cosine annealing to 5% of peak) |
+| Learning rate | 3e-4 (linear warmup 1000 steps → cosine schedule with warm restarts, `eta_min` = 10% of peak) |
 | Epochs        | 75 (early stopping) |
 | Early stop patience | 5 epochs without **epoch-end** val improvement |
-| Optimizer     | AdamW (`WEIGHT_DECAY` 5e-3, `LABEL_SMOOTHING` 0.03, `GRAD_CLIP_NORM` 1.0) |
-| LR schedule   | Warmup → cosine decay (eta_min = 5% of peak LR to prevent near-zero learning late in training) |
+| Optimizer     | AdamW (`WEIGHT_DECAY` 5e-3, `LABEL_SMOOTHING` 0.05, `GRAD_CLIP_NORM` 1.0) |
+| LR schedule   | Warmup → cosine with warm restarts (`COSINE_T0` auto = cosine steps ÷ 3 when unset, `COSINE_T_MULT` 1; `eta_min` = 10% of peak LR). Use `--no-cosine-restarts` for a single cosine decay to `eta_min`. |
 | Tokenization  | Character-level (default) or BPE subword (`--tokenizer bpe`) |
 | KV cache      | Supported for MLP during generation (incremental decoding) |
 | DataLoader workers | Up to 4 (`NUM_WORKERS` in `src/config.py`) |
@@ -321,9 +322,9 @@ The MLP's validation accuracy improved from ~20% to **56%** (within the first tr
 1. **Causal masking** — the largest single factor. Prior bidirectional self-attention let each position see future characters during training, creating a train/generation mismatch. Causal masking (`is_causal=True`) forces left-to-right attention, aligning training with autoregressive generation.
 2. **Stacked self-attention (2 layers)** — a second attention layer lets the model compose local character pairs into higher-level word fragment patterns (`tion`, `ment`, `ing`).
 3. **RoPE** — rotary position embeddings encode relative position directly into the attention computation, replacing learned positional embeddings that needed training from scratch.
-4. **Reduced regularization** — the prior model was underfitting (train loss > val loss). Dropout was reduced from 0.3 → 0.15 → 0.13, label smoothing from 0.05 → 0.03, and weight decay from 1e-2 → 5e-3, letting the model use its capacity.
+4. **Reduced regularization** — the prior model was underfitting (train loss > val loss). Dropout was reduced from 0.3 → 0.15 → 0.13, and weight decay from 1e-2 → 5e-3, letting the model use its capacity. Label smoothing was tuned over time (e.g. 0.05 → 0.03 when fixing causal masking; current default is **0.05** for generalization).
 5. **Noise filtering** — removing OCR garbage and boilerplate from training data freed capacity for actual prose patterns.
-6. **Higher cosine floor** — the cosine annealing minimum LR was raised from 1% → 5% of peak (`COSINE_ETA_MIN_FACTOR` in config) to prevent near-zero learning late in training.
+6. **LR schedule** — cosine **warm restarts** (`CosineAnnealingWarmRestarts`) periodically raise the LR again to escape plateaus; the cosine floor (`COSINE_ETA_MIN_FACTOR`) was raised from 1% → 5% → **10%** of peak to keep updates meaningful late in training.
 
 ## Next steps (roadmap)
 

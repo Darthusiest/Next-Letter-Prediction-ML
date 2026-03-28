@@ -41,11 +41,11 @@ NUM_WORKERS = min(4, os.cpu_count() or 1)
 #   DROPOUT  0.15 → 0.13 : model was underfitting; lower dropout lets the
 #                           network use more capacity now that causal masking
 #                           prevents information leakage.
-#   LABEL_SMOOTHING 0.05 → 0.03 : less smoothing needed post-causal-masking.
+#   LABEL_SMOOTHING 0.03 → 0.05 : softer targets for generalization (see LABEL_SMOOTHING).
 #   DEFAULT_TEMPERATURE 1.0 → 0.8 : sharper sampling matches stronger model.
 #   MLP_NUM_SELF_ATTN_LAYERS (new, =2) : deeper attention captures word-fragment
 #                           patterns; second-largest contributor after causal mask.
-#   COSINE_ETA_MIN_FACTOR 0.01 → 0.05 : prevents near-zero LR late in training.
+#   COSINE_ETA_MIN_FACTOR 0.05 → 0.10 : higher LR floor late in training.
 #
 # These were applied simultaneously.  For future tuning, isolate each change
 # in a separate commit or use CLI overrides (e.g. --dropout, --label-smoothing)
@@ -80,19 +80,23 @@ CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"
 # AdamW weight decay (decoupled from gradient, unlike Adam L2).
 WEIGHT_DECAY = 5e-3
 # Soft targets for cross-entropy (neural models only); 0 disables.
-# Reduced from 0.05 → 0.03: causal masking fixed the train/gen mismatch, so
-# less smoothing is needed to prevent overconfident predictions.
-LABEL_SMOOTHING = 0.030
+# Bumped from 0.03 → 0.05: softer targets improve generalization as model capacity grows.
+LABEL_SMOOTHING = 0.050
 # ReduceLROnPlateau on epoch-end validation loss (on top of cosine annealing).
 USE_PLATEAU_LR = True
 LR_PLATEAU_FACTOR = 0.5
 LR_PLATEAU_PATIENCE = 2
 # Max gradient L2 norm; prevents spikes during training. 0 disables clipping.
 GRAD_CLIP_NORM = 1.0
-# Cosine annealing minimum LR as a fraction of LEARNING_RATE.  A 5% floor
-# (increased from 1%) keeps gradient updates meaningful late in training;
-# prior runs with 1% showed underfitting in the final ~20% of steps.
-COSINE_ETA_MIN_FACTOR = 0.05
+# Cosine annealing minimum LR as a fraction of LEARNING_RATE. 10% floor keeps
+# gradient updates meaningful through the end of training.
+COSINE_ETA_MIN_FACTOR = 0.10
+# Cosine warm restarts (after warmup): restart period T_0 and multiplier T_mult.
+# If COSINE_T0 is None, T_0 is set at train time to max(1, cosine_steps // 3).
+COSINE_T0 = None  # None → T_0 = max(1, cosine_steps // 3) at runtime
+COSINE_T_MULT = 1
+# Use CosineAnnealingWarmRestarts instead of a single CosineAnnealingLR decay.
+USE_COSINE_WARM_RESTARTS = True
 # Linear warmup: ramp LR from near-zero to LEARNING_RATE over this many steps. 0 disables.
 WARMUP_STEPS = 1000
 
@@ -121,3 +125,6 @@ def validate_config():
     assert 0 <= LABEL_SMOOTHING <= 1, f"LABEL_SMOOTHING must be in [0, 1], got {LABEL_SMOOTHING}"
     assert 0 < DEFAULT_TEMPERATURE, f"DEFAULT_TEMPERATURE must be > 0, got {DEFAULT_TEMPERATURE}"
     assert MLP_NUM_SELF_ATTN_LAYERS >= 1, f"MLP_NUM_SELF_ATTN_LAYERS must be >= 1, got {MLP_NUM_SELF_ATTN_LAYERS}"
+    assert COSINE_T_MULT >= 1, f"COSINE_T_MULT must be >= 1, got {COSINE_T_MULT}"
+    if COSINE_T0 is not None:
+        assert COSINE_T0 >= 1, f"COSINE_T0 must be >= 1 when set, got {COSINE_T0}"

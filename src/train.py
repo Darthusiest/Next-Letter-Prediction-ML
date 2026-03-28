@@ -51,6 +51,9 @@ from src.config import (
     GRAD_CLIP_NORM,
     WARMUP_STEPS,
     COSINE_ETA_MIN_FACTOR,
+    COSINE_T0,
+    COSINE_T_MULT,
+    USE_COSINE_WARM_RESTARTS,
     TOKENIZER_TYPE,
     BPE_VOCAB_SIZE,
     validate_config,
@@ -171,6 +174,7 @@ def train(
     bpe_vocab_size: int | None = None,
     mlp_num_attn_heads: int | None = None,
     mlp_num_self_attn_layers: int | None = None,
+    use_cosine_warm_restarts: bool | None = None,
 ) -> tuple:
     """Train a character-level next-character model and return (model, vocab).
 
@@ -210,6 +214,7 @@ def train(
         bpe_vocab_size: BPE vocabulary size override.
         mlp_num_attn_heads: MLP attention heads override.
         mlp_num_self_attn_layers: Stacked causal self-attention layers override.
+        use_cosine_warm_restarts: If set, use cosine with warm restarts vs single cosine decay.
 
     Returns:
         Tuple of ``(model, vocab)`` — the trained model and its vocabulary /
@@ -222,6 +227,11 @@ def train(
     plateau = USE_PLATEAU_LR if use_plateau_lr is None else use_plateau_lr
     clip = GRAD_CLIP_NORM if grad_clip_norm is None else grad_clip_norm
     warmup = WARMUP_STEPS if warmup_steps is None else warmup_steps
+    cosine_restarts = (
+        USE_COSINE_WARM_RESTARTS
+        if use_cosine_warm_restarts is None
+        else use_cosine_warm_restarts
+    )
     tok_type = TOKENIZER_TYPE if tokenizer_type is None else tokenizer_type
     bpe_vs = BPE_VOCAB_SIZE if bpe_vocab_size is None else bpe_vocab_size
     drop = DROPOUT if dropout is None else dropout
@@ -409,20 +419,40 @@ def train(
         cosine_steps = max(total_train_steps - warmup, 1)
         # eta_min floor from config; see COSINE_ETA_MIN_FACTOR rationale there.
         cosine_eta_min = lr * COSINE_ETA_MIN_FACTOR
-        schedulers_parts.append(
-            torch.optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=cosine_steps, eta_min=cosine_eta_min
+        if cosine_restarts:
+            t0 = COSINE_T0 if COSINE_T0 is not None else max(cosine_steps // 3, 1)
+            schedulers_parts.append(
+                torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                    optimizer,
+                    T_0=t0,
+                    T_mult=COSINE_T_MULT,
+                    eta_min=cosine_eta_min,
+                )
             )
-        )
+            logger.info(
+                "Cosine warm restarts: T_0=%d, T_mult=%d, min LR %.1e (%d cosine steps)",
+                t0,
+                COSINE_T_MULT,
+                cosine_eta_min,
+                cosine_steps,
+            )
+        else:
+            schedulers_parts.append(
+                torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer, T_max=cosine_steps, eta_min=cosine_eta_min
+                )
+            )
+            logger.info(
+                "Cosine annealing over %d steps (min LR %.1e)",
+                cosine_steps,
+                cosine_eta_min,
+            )
         step_scheduler = (
             torch.optim.lr_scheduler.SequentialLR(
                 optimizer, schedulers=schedulers_parts, milestones=milestones
             )
             if milestones
             else schedulers_parts[0]
-        )
-        logger.info(
-            "Cosine annealing over %d steps (min LR %.1e)", cosine_steps, cosine_eta_min
         )
         # NOTE: ReduceLROnPlateau modifies param_group['lr'] directly, but
         # CosineAnnealingLR recomputes LR from base_lr on every step, so
@@ -624,6 +654,8 @@ def train(
             "use_plateau_lr": plateau,
             "grad_clip_norm": clip,
             "warmup_steps": warmup,
+            "use_cosine_warm_restarts": cosine_restarts,
+            "cosine_eta_min_factor": COSINE_ETA_MIN_FACTOR,
             "tokenizer": tok_type,
             **({"bpe_vocab_size": bpe_vs} if tok_type == "bpe" else {}),
             **(
@@ -746,6 +778,13 @@ def main():
         help="Linear LR warmup steps (default: WARMUP_STEPS in config; 0 disables).",
     )
     parser.add_argument(
+        "--cosine-restarts",
+        dest="use_cosine_warm_restarts",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Cosine LR schedule with warm restarts (default: USE_COSINE_WARM_RESTARTS in config).",
+    )
+    parser.add_argument(
         "--mlp-hidden-layers",
         type=int,
         default=None,
@@ -818,6 +857,8 @@ def main():
         kw["grad_clip_norm"] = args.grad_clip
     if args.warmup_steps is not None:
         kw["warmup_steps"] = args.warmup_steps
+    if args.use_cosine_warm_restarts is not None:
+        kw["use_cosine_warm_restarts"] = args.use_cosine_warm_restarts
     if args.mlp_hidden_layers is not None:
         kw["mlp_num_hidden_layers"] = args.mlp_hidden_layers
     if args.mlp_attn_heads is not None:

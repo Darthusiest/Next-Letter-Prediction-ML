@@ -3,11 +3,11 @@ MLP with stacked causal self-attention (RoPE), multi-head attention pooling,
 and SwiGLU residual blocks for next-letter prediction.
 
 Architecture:
-  embed(context) [no pos_embed -- RoPE applied in attention]
+  embed(context) * sqrt(embed_dim) [no pos_embed -- RoPE applied in attention]
   → embed_drop
   → N causal self-attention layers with RoPE (positions interact left-to-right)
   → multi-head attention pooling → (B, num_heads * embed_dim)
-  → proj → GELU → dropout
+  → LayerNorm(pool_dim) → proj → GELU → dropout
   → SwiGLU residual blocks with pre-LayerNorm
   → final LayerNorm → [tie_proj] → logits
 
@@ -22,6 +22,7 @@ Modern LLM techniques applied:
   8. Weight tying (embed weights shared with output projection)
 """
 
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -156,6 +157,8 @@ class MLPCharModel(nn.Module):
         self.num_self_attn_layers = num_self_attn_layers
 
         self.embed = nn.Embedding(vocab_size, embed_dim)
+        # Standard transformer scaling so embedding magnitude is ~O(1) vs dim.
+        self.embed_scale = math.sqrt(embed_dim)
         self.embed_drop = nn.Dropout(dropout)
 
         head_dim = embed_dim // num_attn_heads
@@ -168,6 +171,7 @@ class MLPCharModel(nn.Module):
 
         self.attn_pool = nn.Linear(embed_dim, num_attn_heads)
         pool_dim = num_attn_heads * embed_dim
+        self.pool_ln = nn.LayerNorm(pool_dim)
 
         self.proj = nn.Linear(pool_dim, hidden_dim)
         self.dropout = nn.Dropout(dropout)
@@ -190,7 +194,7 @@ class MLPCharModel(nn.Module):
         kv_cache: Optional[List] = None,
         use_cache: bool = False,
     ):
-        x = self.embed(context)                            # (B, L, E)
+        x = self.embed(context) * self.embed_scale       # (B, L, E)
         x = self.embed_drop(x)
 
         new_kv_caches: list = []
@@ -215,6 +219,7 @@ class MLPCharModel(nn.Module):
         weights = F.softmax(scores, dim=1)                 # (B, L', N)
         x = weights.transpose(1, 2) @ pool_input           # (B, N, E)
         x = x.reshape(x.size(0), -1)                      # (B, N*E)
+        x = self.pool_ln(x)
 
         x = self.dropout(F.gelu(self.proj(x)))             # (B, H)
         for block in self.blocks:
@@ -230,7 +235,7 @@ class MLPCharModel(nn.Module):
         return logits
 
     def load_state_dict(self, state_dict, *args, **kwargs):
-        """Handle legacy checkpoint formats (pos_embed, single self_attn)."""
+        """Handle legacy checkpoint formats (pos_embed, single self_attn, no pool_ln)."""
         state_dict = dict(state_dict)
         if "self_attn.qkv.weight" in state_dict:
             remapped = {}
@@ -241,4 +246,6 @@ class MLPCharModel(nn.Module):
                     remapped[k] = v
             state_dict = remapped
         state_dict.pop("pos_embed", None)
+        if "pool_ln.weight" not in state_dict:
+            kwargs["strict"] = False
         return super().load_state_dict(state_dict, *args, **kwargs)

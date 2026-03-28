@@ -1,5 +1,6 @@
 """Tests for n-gram, MLP, CNN, and RNN models."""
 
+import math
 import sys
 from pathlib import Path
 
@@ -38,6 +39,7 @@ def test_mlp_forward():
         num_attn_heads=2,
         num_self_attn_layers=1,
     )
+    assert model.embed_scale == math.sqrt(model.embed_dim)
     x = torch.randint(0, 10, (2, 8))
     out = model(x)
     assert out.shape == (2, 10)
@@ -182,8 +184,29 @@ def test_mlp_pre_layernorm():
         dropout=0.0, num_hidden_layers=3, num_attn_heads=2,
     )
     assert hasattr(model, "final_ln"), "should have a final LayerNorm"
+    assert hasattr(model, "pool_ln"), "should have LayerNorm after attention pooling"
+    assert model.pool_ln.normalized_shape == (model.num_attn_heads * model.embed_dim,)
     for block in model.blocks:
         assert hasattr(block, "ln"), "each block should have pre-LN"
+
+
+def test_mlp_load_state_dict_missing_pool_ln():
+    """Checkpoints without pool_ln load with strict=False; forward still runs."""
+    model = MLPCharModel(
+        vocab_size=10, context_length=8, embed_dim=4, hidden_dim=16,
+        dropout=0.0, num_hidden_layers=1, num_attn_heads=2, num_self_attn_layers=1,
+    )
+    state = {k: v for k, v in model.state_dict().items() if not k.startswith("pool_ln.")}
+    load_into = MLPCharModel(
+        vocab_size=10, context_length=8, embed_dim=4, hidden_dim=16,
+        dropout=0.0, num_hidden_layers=1, num_attn_heads=2, num_self_attn_layers=1,
+    )
+    load_into.load_state_dict(state)
+    x = torch.randint(0, 10, (1, 8))
+    load_into.eval()
+    out = load_into(x)
+    assert out.shape == (1, 10)
+    assert torch.isfinite(out).all()
 
 
 def test_cnn_embed_dropout():

@@ -21,7 +21,8 @@ As of the current tree:
 - **Training entrypoint:** `python -m src.train` with argparse (`--model`,
   `--data-source`, `--max-chars`, `--eval-every`, `--compile`, `--rnn-layers`,
   `--weight-decay`, `--label-smoothing`, `--plateau-lr`, `--grad-clip`,
-  `--warmup-steps`, `--mlp-hidden-layers`, `--mlp-attn-heads`,
+  `--warmup-steps`, `--cosine-restarts` / `--no-cosine-restarts`,
+  `--mlp-hidden-layers`, `--mlp-attn-heads`,
   `--mlp-self-attn-layers`, `--dropout`,
   `--embed-dim`, `--hidden-dim`, `--tokenizer`, `--bpe-vocab-size`);
   programmatic `train()` in `src/train.py` supports further knobs (e.g.
@@ -49,7 +50,7 @@ As of the current tree:
   default 5). Mid-epoch `eval_every` can still refresh `best.pt` but does not
   advance patience (see README / `docs/design.md`).
 - **Regularization (neural):** config `WEIGHT_DECAY` (default `5e-3`),
-  `LABEL_SMOOTHING` (default `0.03`), `GRAD_CLIP_NORM` (default `1.0`),
+  `LABEL_SMOOTHING` (default `0.05`), `GRAD_CLIP_NORM` (default `1.0`),
   `DROPOUT` (default `0.13`, applied to embeddings and hidden layers),
   and `USE_PLATEAU_LR` + `ReduceLROnPlateau` on epoch-end val loss
   (on by default; CLI `--no-plateau-lr` to disable).  Note: cosine annealing
@@ -284,10 +285,12 @@ LLMs:
 
   4. **Reduced regularization**: the prior model was underfitting (train loss >
      val loss, early stopping never triggered). Dropout was reduced (0.3 → 0.15
-     → 0.13), label smoothing (0.05 → 0.03), and weight decay (1e-2 → 5e-3),
-     letting the model use its full capacity.  The cosine annealing minimum LR
-     was also raised from 1% → 5% of peak (`COSINE_ETA_MIN_FACTOR` in config)
-     to prevent near-zero learning late in training.
+     → 0.13) and weight decay (1e-2 → 5e-3), letting the model use its full
+     capacity. Label smoothing was tuned over time (see `LABEL_SMOOTHING` in
+     config). The cosine minimum LR floor (`COSINE_ETA_MIN_FACTOR`) was raised
+     from 1% → 5% → **10%** of peak, and **cosine warm restarts**
+     (`CosineAnnealingWarmRestarts`, `USE_COSINE_WARM_RESTARTS` / `--cosine-restarts`)
+     were added to escape LR plateaus.
 
   5. **Noise filtering**: removing OCR garbage, whitespace-dense lines, and
      boilerplate from the training corpus eliminated categories that had
@@ -301,7 +304,8 @@ LLMs:
 
 - **Backward compatibility**
   - `MLPCharModel.load_state_dict()` automatically remaps legacy checkpoint keys
-    (`self_attn.*` → `self_attn_layers.0.*`) and drops `pos_embed`.
+    (`self_attn.*` → `self_attn_layers.0.*`), drops `pos_embed`, and loads
+    checkpoints missing `pool_ln.*` with `strict=False` (new LayerNorm uses default init).
   - `num_self_attn_layers=1` (constructor default) preserves old behavior for
     existing checkpoints; the config default `MLP_NUM_SELF_ATTN_LAYERS=2` is
     used for new training.
@@ -317,7 +321,8 @@ LLMs:
 - **Config validation**
   - `validate_config()` in `src/config.py` asserts hyperparameter ranges at the
     start of `train()`: `DROPOUT ∈ [0, 1)`, `LABEL_SMOOTHING ∈ [0, 1]`,
-    `DEFAULT_TEMPERATURE > 0`, `MLP_NUM_SELF_ATTN_LAYERS >= 1`.  This catches
+    `DEFAULT_TEMPERATURE > 0`, `MLP_NUM_SELF_ATTN_LAYERS >= 1`,
+    `COSINE_T_MULT >= 1`, and `COSINE_T0 >= 1` when set.  This catches
     configuration errors early rather than during training.
 
 - **Design rationale**
