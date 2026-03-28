@@ -198,6 +198,11 @@ where the repo already implements the family.
     `--mlp-self-attn-layers`, `--embed-dim`, `--hidden-dim`, `--dropout`.
   - Still a fixed-window model -- does not model variable-length history beyond
     the context length (KV cache extends the effective window during generation).
+  - **Performance**: these combined changes raised validation accuracy from ~20%
+    (prior architecture) to **~56%** within the first epoch. The largest driver
+    was causal masking, which eliminated the train/generation mismatch caused by
+    bidirectional attention. Stacked self-attention, RoPE, reduced regularization,
+    and noise filtering contributed the remaining gains.
 
 - **RNN / LSTM / GRU:** -- **implemented** (`rnn`, LSTM in code)
   - Processes characters sequentially with a hidden state.

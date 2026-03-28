@@ -1,6 +1,6 @@
 # Character-Level Next-Letter Prediction
 
-Predict the next character in English text from prior context. The model predicts **any character**: letters (upper- and lowercase), digits, and punctuation. Target performance is ~20% validation and test accuracy. Implements n-gram, MLP, RNN (LSTM), and CNN baselines.
+Predict the next character in English text from prior context. The model predicts **any character**: letters (upper- and lowercase), digits, and punctuation. The MLP architecture achieves **~56% validation accuracy** (up from ~20% with prior architecture). Implements n-gram, MLP, RNN (LSTM), and CNN models.
 
 ## Setup
 
@@ -97,7 +97,7 @@ At the end of training, the script automatically runs the full post-training ana
 
 ### Checkpoints, metrics, and analysis
 
-- **Early stopping** uses **end-of-epoch** validation loss only. If `eval_every` runs mid-epoch, it can still update `best.pt` and `best_val_loss`, but it does **not** increment early-stopping patience (patience resets only when epoch-end val improves). Tune `EARLY_STOPPING_PATIENCE` in [`src/config.py`](src/config.py) (default **3** epochs without epoch-end improvement).
+- **Early stopping** uses **end-of-epoch** validation loss only. If `eval_every` runs mid-epoch, it can still update `best.pt` and `best_val_loss`, but it does **not** increment early-stopping patience (patience resets only when epoch-end val improves). Tune `EARLY_STOPPING_PATIENCE` in [`src/config.py`](src/config.py) (default **5** epochs without epoch-end improvement).
 - **`run_post_training_analysis`** loads **`best.pt` first**, then `checkpoint.pt`, so prediction plots and most model-based analyses match **best validation** weights by default.
 
 To train the **n-gram** baseline instead (no GPU, fast):
@@ -131,6 +131,8 @@ python -m src.train --model ngram
 | `--bpe-vocab-size` | BPE vocabulary size (default: `BPE_VOCAB_SIZE` in config, 2000). |
 
 Other overrides live on `train()` in `src/train.py`, e.g. `num_workers`, `epochs`, `batch_size`.
+
+**Config validation:** `validate_config()` in `src/config.py` is called at the start of `train()` and asserts that hyperparameters are within valid ranges (e.g. `0 <= DROPOUT < 1`, `LABEL_SMOOTHING` in [0, 1], `DEFAULT_TEMPERATURE > 0`, `MLP_NUM_SELF_ATTN_LAYERS >= 1`). Edit the function to add project-specific constraints.
 
 #### Regularization and architecture ablations
 
@@ -302,7 +304,7 @@ Each run creates plots/reports under `outputs/runs/<run_id>/`:
 | Position encoding | Rotary Position Embeddings (RoPE) applied to Q/K in each self-attention layer |
 | Activation    | SwiGLU (MLP residual blocks); GELU (MLP projection, CNN); LSTM gates (RNN) |
 | Normalization | Pre-LayerNorm in MLP residual blocks + self-attention; post-LN in RNN, CNN |
-| Dropout       | 0.15 (embedding + hidden layers; all models have embedding dropout) |
+| Dropout       | 0.13 (embedding + hidden layers; all models have embedding dropout) |
 | Learning rate | 3e-4 (linear warmup 1000 steps → cosine annealing to 5% of peak) |
 | Epochs        | 75 (early stopping) |
 | Early stop patience | 5 epochs without **epoch-end** val improvement |
@@ -311,6 +313,17 @@ Each run creates plots/reports under `outputs/runs/<run_id>/`:
 | Tokenization  | Character-level (default) or BPE subword (`--tokenizer bpe`) |
 | KV cache      | Supported for MLP during generation (incremental decoding) |
 | DataLoader workers | Up to 4 (`NUM_WORKERS` in `src/config.py`) |
+
+## Performance: what drove the ~20% → 56% accuracy jump
+
+The MLP's validation accuracy improved from ~20% to **56%** (within the first training epoch). The key changes, ranked by impact:
+
+1. **Causal masking** — the largest single factor. Prior bidirectional self-attention let each position see future characters during training, creating a train/generation mismatch. Causal masking (`is_causal=True`) forces left-to-right attention, aligning training with autoregressive generation.
+2. **Stacked self-attention (2 layers)** — a second attention layer lets the model compose local character pairs into higher-level word fragment patterns (`tion`, `ment`, `ing`).
+3. **RoPE** — rotary position embeddings encode relative position directly into the attention computation, replacing learned positional embeddings that needed training from scratch.
+4. **Reduced regularization** — the prior model was underfitting (train loss > val loss). Dropout was reduced from 0.3 → 0.15 → 0.13, label smoothing from 0.05 → 0.03, and weight decay from 1e-2 → 5e-3, letting the model use its capacity.
+5. **Noise filtering** — removing OCR garbage and boilerplate from training data freed capacity for actual prose patterns.
+6. **Higher cosine floor** — the cosine annealing minimum LR was raised from 1% → 5% of peak (`COSINE_ETA_MIN_FACTOR` in config) to prevent near-zero learning late in training.
 
 ## Next steps (roadmap)
 

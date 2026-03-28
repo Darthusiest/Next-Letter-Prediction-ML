@@ -50,8 +50,10 @@ from src.config import (
     LR_PLATEAU_PATIENCE,
     GRAD_CLIP_NORM,
     WARMUP_STEPS,
+    COSINE_ETA_MIN_FACTOR,
     TOKENIZER_TYPE,
     BPE_VOCAB_SIZE,
+    validate_config,
 )
 from src.preprocess import load_text, clean_text
 from src.vocab import build_vocab_from_text, CharVocab
@@ -120,6 +122,20 @@ def _evaluate_from_neural_checkpoint(
         context_length=context_length,
         **model_kwargs,
     )
+    expected_keys = set(eval_model.state_dict().keys())
+    checkpoint_keys = set(state.keys())
+    if expected_keys != checkpoint_keys:
+        missing = expected_keys - checkpoint_keys
+        unexpected = checkpoint_keys - expected_keys
+        parts = []
+        if missing:
+            parts.append(f"missing={missing}")
+        if unexpected:
+            parts.append(f"unexpected={unexpected}")
+        logger.warning(
+            "Checkpoint state_dict key mismatch (inferred kwargs may be wrong): %s",
+            "; ".join(parts),
+        )
     eval_model.load_state_dict(state)
     eval_model.to(device)
     return evaluate(eval_model, test_loader, device, is_ngram=False)
@@ -155,7 +171,52 @@ def train(
     bpe_vocab_size: int | None = None,
     mlp_num_attn_heads: int | None = None,
     mlp_num_self_attn_layers: int | None = None,
-):
+) -> tuple:
+    """Train a character-level next-character model and return (model, vocab).
+
+    Loads text data, builds vocabulary, trains the requested model architecture
+    with cross-entropy loss, and saves checkpoints + metrics under a timestamped
+    run directory.  For neural models a ``neural_model_kwargs`` dict is built to
+    record the architecture for checkpoint reproducibility.
+
+    Args:
+        data_paths: Explicit list of text file paths; auto-discovered if *None*.
+        model_name: Architecture identifier (``"ngram"``, ``"mlp"``, ``"rnn"``,
+            ``"cnn"``).
+        data_source: ``"raw"`` (data/raw/) or ``"cleaned"`` (data/processed/).
+        max_chars: Truncate corpus after this many characters; *None* = all.
+        context_length: Sliding-window size for (context → next-char) examples.
+        batch_size: Mini-batch size for DataLoader.
+        lr: Peak learning rate for AdamW.
+        epochs: Maximum training epochs (subject to early stopping).
+        eval_every: Run mid-epoch validation every *N* training steps.
+        log_every: Log training loss every *N* steps within an epoch.
+        early_stop_patience: Epochs without epoch-end val improvement before stop.
+        checkpoint_dir: Overridden internally to the per-run output directory.
+        seed: Random seed for reproducibility.
+        num_workers: DataLoader worker processes; *None* → config default.
+        compile_model: Enable ``torch.compile`` on the model.
+        rnn_num_layers: LSTM depth override (RNN only).
+        weight_decay: AdamW weight decay override.
+        label_smoothing: Cross-entropy label smoothing override.
+        use_plateau_lr: Enable/disable ReduceLROnPlateau override.
+        grad_clip_norm: Max gradient L2 norm override; 0 disables.
+        warmup_steps: Linear LR warmup steps override; 0 disables.
+        mlp_num_hidden_layers: MLP hidden block depth override.
+        dropout: Dropout rate override for all layers.
+        embed_dim: Embedding dimension override.
+        hidden_dim: Hidden layer dimension override.
+        tokenizer_type: ``"char"`` or ``"bpe"`` tokenization override.
+        bpe_vocab_size: BPE vocabulary size override.
+        mlp_num_attn_heads: MLP attention heads override.
+        mlp_num_self_attn_layers: Stacked causal self-attention layers override.
+
+    Returns:
+        Tuple of ``(model, vocab)`` — the trained model and its vocabulary /
+        tokenizer object.
+    """
+    validate_config()
+
     wd = WEIGHT_DECAY if weight_decay is None else weight_decay
     ls = LABEL_SMOOTHING if label_smoothing is None else label_smoothing
     plateau = USE_PLATEAU_LR if use_plateau_lr is None else use_plateau_lr
@@ -299,7 +360,7 @@ def train(
             except Exception as e:
                 logger.warning("torch.compile skipped: %s", e)
 
-        neural_model_kwargs: dict = {
+        neural_model_kwargs: dict[str, int | float] = {
             "embed_dim": edim,
             "hidden_dim": hdim,
             "dropout": drop,
@@ -309,7 +370,9 @@ def train(
         if model_name == "mlp":
             neural_model_kwargs["num_hidden_layers"] = model.num_hidden_layers
             neural_model_kwargs["num_attn_heads"] = model.num_attn_heads
-            neural_model_kwargs["num_self_attn_layers"] = model.num_self_attn_layers
+            neural_model_kwargs["num_self_attn_layers"] = getattr(
+                model, "num_self_attn_layers", MLP_NUM_SELF_ATTN_LAYERS
+            )
 
         def _best_pt_payload() -> dict:
             payload = {
@@ -344,9 +407,8 @@ def train(
             milestones.append(warmup)
             logger.info("Linear LR warmup over %d steps", warmup)
         cosine_steps = max(total_train_steps - warmup, 1)
-        # eta_min = 5% of peak LR keeps gradient updates meaningful late in
-        # training; too-low floors (~0.01×) caused underfitting in prior runs.
-        cosine_eta_min = lr * 0.05
+        # eta_min floor from config; see COSINE_ETA_MIN_FACTOR rationale there.
+        cosine_eta_min = lr * COSINE_ETA_MIN_FACTOR
         schedulers_parts.append(
             torch.optim.lr_scheduler.CosineAnnealingLR(
                 optimizer, T_max=cosine_steps, eta_min=cosine_eta_min
@@ -566,9 +628,9 @@ def train(
             **({"bpe_vocab_size": bpe_vs} if tok_type == "bpe" else {}),
             **(
                 {
-                    "mlp_num_hidden_layers": model.num_hidden_layers,
-                    "mlp_num_attn_heads": model.num_attn_heads,
-                    "mlp_num_self_attn_layers": model.num_self_attn_layers,
+                    "mlp_num_hidden_layers": getattr(model, "num_hidden_layers", MLP_NUM_HIDDEN_LAYERS),
+                    "mlp_num_attn_heads": getattr(model, "num_attn_heads", MLP_NUM_ATTN_HEADS),
+                    "mlp_num_self_attn_layers": getattr(model, "num_self_attn_layers", MLP_NUM_SELF_ATTN_LAYERS),
                 }
                 if model_name == "mlp"
                 else {}
