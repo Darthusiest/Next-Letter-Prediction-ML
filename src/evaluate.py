@@ -11,10 +11,14 @@ def evaluate(
     dataloader: torch.utils.data.DataLoader,
     device: torch.device,
     is_ngram: bool = False,
+    max_batches: int | None = None,
 ) -> tuple:
     """
     Compute average cross-entropy loss (nll_loss for n-gram) and accuracy.
     Returns (loss, accuracy). Loss is per-token; perplexity = exp(loss).
+
+    If *max_batches* is set, evaluation stops after that many batches
+    (useful for fast mid-epoch validation on a subsample).
     """
     model.eval()
     total_loss = torch.tensor(0.0, device=device)
@@ -22,7 +26,9 @@ def evaluate(
     total_tokens = 0
     non_blocking = device.type in ("cuda", "mps")
     with torch.inference_mode():
-        for context, target in dataloader:
+        for batch_idx, (context, target) in enumerate(dataloader):
+            if max_batches is not None and batch_idx >= max_batches:
+                break
             context = context.to(device, non_blocking=non_blocking)
             target = target.to(device, non_blocking=non_blocking)
             out = model(context)

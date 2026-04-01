@@ -30,7 +30,7 @@ DEFAULT_ALLOWED_CHARS = set(
 )
 
 # Dataloader
-BATCH_SIZE = 128
+BATCH_SIZE = 512
 # >0 overlaps batch prep with GPU/MPS work; use 0 only if debugging worker issues.
 NUM_WORKERS = min(4, os.cpu_count() or 1)
 
@@ -72,7 +72,10 @@ RNN_NUM_LAYERS = 1
 # Training
 LEARNING_RATE = 3e-4
 EPOCHS = 75
-EVAL_EVERY_N_STEPS = 5000
+EVAL_EVERY_N_STEPS = 10_000
+# Mid-epoch validation uses a random subsample for speed; end-of-epoch uses
+# the full val set.  None = no limit (always full).
+MID_EPOCH_EVAL_MAX_BATCHES = 200
 # Early stopping uses **end-of-epoch** validation only (not eval_every mid-epoch).
 EARLY_STOPPING_PATIENCE = 5
 CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"

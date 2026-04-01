@@ -26,6 +26,7 @@ from src.config import (
     LEARNING_RATE,
     EPOCHS,
     EVAL_EVERY_N_STEPS,
+    MID_EPOCH_EVAL_MAX_BATCHES,
     EARLY_STOPPING_PATIENCE,
     CHECKPOINT_DIR,
     RAW_DATA_DIR,
@@ -528,10 +529,15 @@ def train(
                     total_loss_gpu.item() / num_batches,
                 )
             if step % eval_every == 0:
-                val_loss, val_acc = evaluate(model, val_loader, device, is_ngram=False)
+                val_loss, val_acc = evaluate(
+                    model, val_loader, device, is_ngram=False,
+                    max_batches=MID_EPOCH_EVAL_MAX_BATCHES,
+                )
                 logger.info(
-                    "Epoch %d step %d train_loss=%.4f val_loss=%.4f val_acc=%.4f",
+                    "Epoch %d step %d train_loss=%.4f val_loss=%.4f val_acc=%.4f%s",
                     epoch + 1, step, total_loss_gpu.item() / num_batches, val_loss, val_acc,
+                    f" (subsample {MID_EPOCH_EVAL_MAX_BATCHES} batches)"
+                    if MID_EPOCH_EVAL_MAX_BATCHES else "",
                 )
                 model.train()
                 if val_loss < best_val_loss:
@@ -725,6 +731,13 @@ def main():
         help="Truncate corpus to this many characters (default: config MAX_CHARS).",
     )
     parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Mini-batch size for training and evaluation (default: BATCH_SIZE in config).",
+    )
+    parser.add_argument(
         "--eval-every",
         type=int,
         default=None,
@@ -839,6 +852,8 @@ def main():
     args = parser.parse_args()
     setup_logging()
     kw = {}
+    if args.batch_size is not None:
+        kw["batch_size"] = args.batch_size
     if args.eval_every is not None:
         kw["eval_every"] = args.eval_every
     if args.compile:
